@@ -58,38 +58,30 @@ const ALGORITHMS: Array<[string, string]> = [
 const ALGO_NOTES: Array<{ id: string; title: string; lines: string[] }> = [
   {
     id: 'dijkstra',
-    title: 'Dijkstra — weighted shortest path',
+    title: 'Dijkstra',
     lines: [
-      'Maintains the best-known distance to every node and a min-priority queue.',
-      'Repeatedly extracts the closest unsettled node (extract-min) and relaxes each outgoing edge: if going through it improves the neighbour’s distance, update it.',
-      'With non-negative weights the result is the provably optimal path. Explores roughly evenly in all directions.',
+      'Weighted shortest path with a min-priority queue: repeatedly extract the closest unsettled node and relax its outgoing edges. Optimal for non-negative weights.',
     ],
   },
   {
     id: 'astar',
-    title: 'A* — weighted shortest path with a heuristic',
+    title: 'A*',
     lines: [
-      'Orders the queue by f = g + h: g is the cost so far, h is the straight-line (Euclidean) distance from the node to the destination.',
-      'Same graph, same weights, same optimal guarantee as Dijkstra — the heuristic only changes which node is examined next.',
-      'When the heuristic guides well, it often reaches the destination before exploring the whole graph; on some graphs/queries the saving is small (or none), which the comparison panel shows honestly.',
+      'Same graph and weights as Dijkstra, but the queue is ordered by f = g + h, where h is the straight-line distance to the destination. Often expands fewer nodes — not guaranteed on every graph.',
     ],
   },
   {
     id: 'bfs',
-    title: 'BFS — fewest hops, unweighted',
+    title: 'BFS',
     lines: [
-      'Traverses the graph level by level with a FIFO queue: everything 1 hop away, then 2, then 3…',
-      'Guarantees the fewest number of edges (hops) between two nodes — it completely ignores edge distances, so its “cost” is hop count, not metres.',
-      'Useful as a baseline: on this network it returns a different, usually longer, route than Dijkstra.',
+      'Fewest-hop traversal with a FIFO queue, level by level. Its cost is edge count, not distance.',
     ],
   },
   {
     id: 'dfs',
-    title: 'DFS — graph traversal demo (not for routing)',
+    title: 'DFS',
     lines: [
-      'Uses an explicit stack: push a node’s unvisited neighbours, pop the top, repeat.',
-      'It is a traversal technique, not a shortest-path algorithm — its visit order is deep and arbitrary, and the path it finds is not shortest.',
-      'Included to contrast a pure traversal (DFS) with searches that actually optimise (Dijkstra, A*, BFS).',
+      'Depth-first traversal with an explicit stack. A traversal technique, not a shortest-path algorithm.',
     ],
   },
 ];
@@ -114,19 +106,31 @@ export function buildControls(
     </div>`;
   root.appendChild(header);
 
-  // ── 1 · Dataset ───────────────────────────────────────────────────────
-  const datasetCard = collapsible('DATASET', true);
+  // ── 1 · Dataset (compact provenance summary) ──────────────────────────
+  const datasetCard = collapsible('Dataset', true);
+  const prov = document.createElement('dl');
+  prov.className = 'dataset-prov';
+  const provLine = (k: string, v: string): void => {
+    const div = document.createElement('div');
+    div.className = 'prov-line';
+    const dt = document.createElement('dt');
+    dt.textContent = k;
+    const dd = document.createElement('dd');
+    dd.textContent = v;
+    div.append(dt, dd);
+    prov.appendChild(div);
+  };
+  provLine('Data source', 'Public 2026 EPCOT map');
+  provLine('Confidence', 'Approximate digitized geometry');
+  datasetCard.body.appendChild(prov);
   const datasetStats = document.createElement('div');
   datasetStats.className = 'dataset-stats';
-  datasetStats.textContent = `EPCOT · Walt Disney World — ${opts.vertexCount} locations · ${opts.edgeCount} walkable connections`;
-  const datasetSub = document.createElement('div');
-  datasetSub.className = 'dataset-sub';
-  datasetSub.textContent = 'Digitized approximate geometry — all distances are in metres.';
-  datasetCard.body.append(datasetStats, datasetSub);
+  datasetStats.textContent = `${opts.vertexCount} locations · ${opts.edgeCount} connections · distances in metres`;
+  datasetCard.body.appendChild(datasetStats);
   root.appendChild(datasetCard.card);
 
-  // ── 2 · Route form: From / To / Algorithm / FIND ROUTE ────────────────
-  const formCard = collapsible('ROUTE', true);
+  // ── 2 · Route form: From / To / Algorithm / Find route ────────────────
+  const formCard = collapsible('Route', true);
   const form = document.createElement('section');
   form.className = 'form-body';
   form.appendChild(tag('From'));
@@ -157,13 +161,13 @@ export function buildControls(
 
   const btnFindRoute = document.createElement('button');
   btnFindRoute.className = 'btn btn-primary btn-block';
-  btnFindRoute.textContent = 'FIND ROUTE';
+  btnFindRoute.textContent = 'Find route';
   form.appendChild(btnFindRoute);
   formCard.body.appendChild(form);
   root.appendChild(formCard.card);
 
   // ── 3 · Results (route / comparison / alternative / block) ───────────
-  const resultsCard = collapsible('RESULT', true);
+  const resultsCard = collapsible('Result', true);
   const results = document.createElement('section');
   results.className = 'results-stack';
   const mkPanel = (cls: string): HTMLElement => {
@@ -184,25 +188,25 @@ export function buildControls(
   row2.className = 'btn-row';
   const btnCompare = document.createElement('button');
   btnCompare.className = 'btn btn-ghost';
-  btnCompare.textContent = 'COMPARE DIJKSTRA vs A*';
+  btnCompare.textContent = 'Compare Dijkstra vs A*';
   const btnAlternative = document.createElement('button');
   btnAlternative.className = 'btn btn-ghost';
-  btnAlternative.textContent = 'FIND ALTERNATIVE';
+  btnAlternative.textContent = 'Find alternative';
   row2.append(btnCompare, btnAlternative);
   const btnReset = document.createElement('button');
   btnReset.className = 'btn btn-ghost btn-block';
-  btnReset.textContent = 'RESET';
+  btnReset.textContent = 'Reset';
   resultsCard.body.append(row2, btnReset);
   root.appendChild(resultsCard.card);
 
   // ── 4 · Advanced (collapsed): Block path / View / Replay ─────────────
-  const advCard = collapsible('ADVANCED', false);
+  const advCard = collapsible('Advanced', false);
   const advBody = advCard.body;
 
   // Block-path simulation
   const blockGroup = document.createElement('div');
   blockGroup.className = 'adv-group';
-  blockGroup.appendChild(groupTag('Blocked-path simulation'));
+  blockGroup.appendChild(groupTag('Block path'));
   const blockRow = document.createElement('label');
   blockRow.className = 'toggle-row';
   const blockMode = document.createElement('input');
@@ -239,7 +243,7 @@ export function buildControls(
   labelRow.appendChild(document.createTextNode('Location labels'));
   const btnCamera = document.createElement('button');
   btnCamera.className = 'btn btn-ghost btn-block';
-  btnCamera.textContent = 'RESET CAMERA';
+  btnCamera.textContent = 'Reset camera';
   const viewHint = document.createElement('div');
   viewHint.className = 'hint';
   viewHint.textContent = 'Labels appear in stages as you zoom in (far → major only · close → all). Drag to orbit · scroll to zoom · right-drag to pan.';
@@ -249,7 +253,7 @@ export function buildControls(
   // Replay
   const replayGroup = document.createElement('div');
   replayGroup.className = 'adv-group';
-  replayGroup.appendChild(groupTag('Algorithm replay'));
+  replayGroup.appendChild(groupTag('Replay'));
   const replayBar = document.createElement('div');
   replayBar.className = 'replay-bar';
   const btnPlay = document.createElement('button');
@@ -299,7 +303,7 @@ export function buildControls(
   root.appendChild(advCard.card);
 
   // ── 5 · Algorithm notes ───────────────────────────────────────────────
-  const algoCard = collapsible('ALGORITHM NOTES', false);
+  const algoCard = collapsible('Algorithm notes', false);
   const algoNotes = document.createElement('div');
   algoNotes.className = 'algo-notes';
   for (const n of ALGO_NOTES) {
@@ -324,7 +328,7 @@ export function buildControls(
   // ── Provenance ────────────────────────────────────────────────────────
   const btnProvenance = document.createElement('button');
   btnProvenance.className = 'btn btn-ghost btn-block btn-provenance';
-  btnProvenance.textContent = 'ⓘ DATA PROVENANCE';
+  btnProvenance.textContent = 'ⓘ Data provenance';
   root.appendChild(btnProvenance);
 
   container.appendChild(root);
@@ -345,7 +349,7 @@ export function buildControls(
   infoPanel.hidden = true;
   const infoClose = document.createElement('button');
   infoClose.className = 'btn btn-ghost btn-block';
-  infoClose.textContent = 'CLOSE';
+  infoClose.textContent = 'Close';
   infoPanel.appendChild(infoClose);
   const infoBody = document.createElement('div');
   infoBody.className = 'prov-info-body';

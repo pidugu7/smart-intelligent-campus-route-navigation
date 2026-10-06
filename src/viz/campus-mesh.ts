@@ -409,25 +409,29 @@ function buildingFor(id: string, type: string): THREE.Group | null {
 // ── labels ──────────────────────────────────────────────────────────────────
 
 function makeLabel(text: string, major: boolean): THREE.Sprite {
-  const font = major ? '600 44px system-ui, -apple-system, "Segoe UI", sans-serif' : '500 36px system-ui, -apple-system, "Segoe UI", sans-serif';
+  // Map-label look: calm sans-serif, light weight, subtle translucent
+  // backing with only slightly rounded corners — not a UI button.
+  const font = major
+    ? '500 38px Inter, ui-sans-serif, system-ui, "Segoe UI", sans-serif'
+    : '400 32px Inter, ui-sans-serif, system-ui, "Segoe UI", sans-serif';
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d')!;
   ctx.font = font;
-  const padX = 20;
+  const padX = 16;
   const w = Math.ceil(ctx.measureText(text).width) + padX * 2;
-  const h = major ? 64 : 54;
+  const h = major ? 54 : 46;
   canvas.width = w;
   canvas.height = h;
   ctx.font = font;
-  const r = 14;
+  const r = 9;
   ctx.beginPath();
-  ctx.roundRect(1.5, 1.5, w - 3, h - 3, r);
-  ctx.fillStyle = 'rgba(9, 14, 26, 0.85)';
+  ctx.roundRect(1, 1, w - 2, h - 2, r);
+  ctx.fillStyle = 'rgba(10, 15, 26, 0.72)';
   ctx.fill();
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = major ? 'rgba(125, 170, 255, 0.55)' : 'rgba(120, 135, 160, 0.35)';
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = major ? 'rgba(140, 170, 215, 0.5)' : 'rgba(110, 125, 150, 0.3)';
   ctx.stroke();
-  ctx.fillStyle = major ? '#f3f6fc' : '#c8d2e2';
+  ctx.fillStyle = major ? '#e8eef7' : '#b6c2d6';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, w / 2, h / 2 + 1);
@@ -436,7 +440,7 @@ function makeLabel(text: string, major: boolean): THREE.Sprite {
   texture.anisotropy = 4;
   const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true });
   const sprite = new THREE.Sprite(material);
-  const worldH = major ? 19 : 15;
+  const worldH = major ? 17 : 13;
   const worldW = worldH * (w / h);
   sprite.scale.set(worldW, worldH, 1);
   sprite.userData.baseScale = new THREE.Vector2(worldW, worldH);

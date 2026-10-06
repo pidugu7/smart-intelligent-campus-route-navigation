@@ -47,12 +47,12 @@ export function pathLengthMeters(path: readonly string[], weightOf: (a: string, 
   return sum;
 }
 
-/** One cell of the result stats grid. */
-function statCell(grid: HTMLElement, label: string, value: string): void {
-  const cell = el('div', 'stat-cell');
-  cell.appendChild(el('div', 'stat-value', value));
-  cell.appendChild(el('div', 'stat-label', label));
-  grid.appendChild(cell);
+/** One quiet item of the metadata strip. */
+function metaItem(strip: HTMLElement, label: string, value: string): void {
+  const item = el('div', 'meta-item');
+  item.appendChild(el('div', 'meta-value', value));
+  item.appendChild(el('div', 'meta-label', label));
+  strip.appendChild(item);
 }
 
 // ── route result ────────────────────────────────────────────────────────────
@@ -68,61 +68,58 @@ export function renderRouteResult(
 
   // Unreachable — plain, unambiguous
   if (result.status === 'unreachable') {
-    card.appendChild(el('div', 'panel-title', 'No route'));
+    card.appendChild(el('div', 'panel-title', `${algoLabel} route`));
     const chipRow = el('div', 'result-status');
     chipRow.appendChild(el('span', 'status-chip status-no', '✗ Unreachable'));
+    chipRow.appendChild(el('span', 'result-endpoints', `${result.source.name} → ${result.target.name}`));
     card.appendChild(chipRow);
-    card.appendChild(
-      el('div', 'result-bad', `${result.source.name} → ${result.target.name}: destination is UNREACHABLE (disconnected after blocks).`),
-    );
-    card.appendChild(el('div', 'provenance-note', `Search explored ${result.nodesExpanded} nodes before exhausting the graph.`));
+    card.appendChild(el('div', 'result-bad', 'No route exists between these two locations in the graph.'));
+    card.appendChild(el('div', 'provenance-note', `The search expanded ${result.nodesExpanded} nodes before exhausting the graph.`));
     container.appendChild(card);
     return;
   }
 
   const isBfs = algoLabel === 'BFS';
 
-  // Title + status line
   card.appendChild(el('div', 'panel-title', `${algoLabel} route`));
   const chipRow = el('div', 'result-status');
-  chipRow.appendChild(el('span', 'status-chip status-ok', isBfs ? '✓ Fewest-hop route' : '✓ Optimal route'));
+  chipRow.appendChild(el('span', 'status-chip status-ok', isBfs ? '✓ Fewest-hop route found' : '✓ Route found'));
   chipRow.appendChild(el('span', 'result-endpoints', `${result.source.name} → ${result.target.name}`));
   card.appendChild(chipRow);
 
-  // Headline metric: big cost + est. walk time side by side
-  const headline = el('div', 'result-headline');
+  // Primary result: the cost, as a single large number.
   const cost = el('div', 'result-cost');
   if (isBfs) {
     cost.appendChild(el('span', 'result-cost-value', String(result.totalDistance)));
     cost.appendChild(el('span', 'result-cost-unit', 'hops · fewest edges'));
   } else {
     cost.appendChild(el('span', 'result-cost-value', Math.round(result.totalDistance).toLocaleString('en-IN')));
-    cost.appendChild(el('span', 'result-cost-unit', 'm · total distance'));
+    cost.appendChild(el('span', 'result-cost-unit', 'm'));
   }
-  headline.appendChild(cost);
-  // BFS: routeLength is the true metre length of the fewest-hop path (weights
-  // ignored by design); weighted algos already report metres.
+  card.appendChild(cost);
+
+  // Secondary: estimated walk time. BFS: routeLength is the digitized metre
+  // length of the fewest-hop path (weights ignored by design).
   const metersForWalk = isBfs && routeLength !== null ? routeLength : result.totalDistance;
   const walk = estimateWalkTime(metersForWalk);
-  headline.appendChild(el('div', 'result-walk', `≈ ${fmtTime(walk.estimatedSeconds)} walk · ${walk.speedMetersPerSecond} m/s`));
-  card.appendChild(headline);
+  card.appendChild(el('div', 'result-walk', `≈ ${fmtTime(walk.estimatedSeconds)} walk at ${walk.speedMetersPerSecond} m/s`));
 
-  // Stats grid: edges on route / nodes expanded / trace steps
-  const grid = el('div', 'stat-grid');
-  statCell(grid, 'Edges on route', String(result.path.length - 1));
-  statCell(grid, 'Nodes expanded', String(result.nodesExpanded));
-  statCell(grid, 'Trace steps', String(result.trace.length));
+  // Quiet metadata: algorithm work, not results.
+  const strip = el('div', 'meta-strip');
+  metaItem(strip, 'nodes expanded', String(result.nodesExpanded));
+  metaItem(strip, 'trace steps', String(result.trace.length));
+  metaItem(strip, 'edges on route', String(result.path.length - 1));
   if (isBfs && routeLength !== null) {
-    statCell(grid, 'Route length', fmtMeters(routeLength));
+    metaItem(strip, 'route length', fmtMeters(routeLength));
   }
-  card.appendChild(grid);
+  card.appendChild(strip);
 
   card.appendChild(
     el(
       'div',
       'provenance-note',
       isBfs
-        ? 'BFS cost = hops (weights ignored by design). Route length above is the digitized metre length of that fewest-hop path.'
+        ? 'BFS cost is hop count (weights ignored by design); route length is the digitized metre length of that path. Distances based on digitized approximate geometry.'
         : `Distance based on ${APPROX_BADGE} — not a measured real-world value.`,
     ),
   );
@@ -276,24 +273,24 @@ export function renderBlockReport(
   card.appendChild(chipRow);
 
   if (after.status === 'ok') {
-    const grid = el('div', 'stat-grid stat-grid-2');
+    const strip = el('div', 'meta-strip');
     if (before.status === 'ok') {
-      statCell(grid, 'Before (clear)', fmtMeters(before.totalDistance));
-      statCell(grid, 'After (rerouted)', fmtMeters(after.totalDistance));
+      metaItem(strip, 'before (clear)', fmtMeters(before.totalDistance));
+      metaItem(strip, 'after (rerouted)', fmtMeters(after.totalDistance));
       const delta = after.totalDistance - before.totalDistance;
-      statCell(grid, 'Change', `${delta >= 0 ? '+' : '−'}${fmtMeters(Math.abs(delta))}`);
-      statCell(grid, 'Extra walk time', `+${fmtTime(Math.abs(estimateWalkTime(after.totalDistance).estimatedSeconds - estimateWalkTime(before.totalDistance).estimatedSeconds))}`);
+      metaItem(strip, 'change', `${delta >= 0 ? '+' : '−'}${fmtMeters(Math.abs(delta))}`);
+      metaItem(strip, 'extra walk time', `+${fmtTime(Math.abs(estimateWalkTime(after.totalDistance).estimatedSeconds - estimateWalkTime(before.totalDistance).estimatedSeconds))}`);
     } else {
-      statCell(grid, 'Before', 'unreachable');
-      statCell(grid, 'After (rerouted)', fmtMeters(after.totalDistance));
+      metaItem(strip, 'before', 'unreachable');
+      metaItem(strip, 'after (rerouted)', fmtMeters(after.totalDistance));
     }
-    card.appendChild(grid);
+    card.appendChild(strip);
   } else {
-    card.appendChild(el('div', 'result-bad', `✗ Destination became UNREACHABLE with ${blockedCount} walkway${blockedCount === 1 ? '' : 's'} blocked.`));
+    card.appendChild(el('div', 'result-bad', `No route remains with ${blockedCount} walkway${blockedCount === 1 ? '' : 's'} blocked — the destination is unreachable.`));
     if (before.status === 'ok') {
-      const grid = el('div', 'stat-grid');
-      statCell(grid, 'Before (clear)', fmtMeters(before.totalDistance));
-      card.appendChild(grid);
+      const strip = el('div', 'meta-strip');
+      metaItem(strip, 'before (clear)', fmtMeters(before.totalDistance));
+      card.appendChild(strip);
     }
   }
 

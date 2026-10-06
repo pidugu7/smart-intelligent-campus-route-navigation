@@ -298,12 +298,12 @@ function main(): void {
     for (const p of Object.values(ui.panels)) clearPanel(p);
   };
 
-  // ── replay readout (TRACE REPLAY panel) ───────────────────────────────────
+  // ── replay readout (trace replay panel) ───────────────────────────────────
   const setReplayReadout = (title: string, stepText: string, kind: string, detail: string, sub: string | null): void => {
     const r = ui.replay.readout;
     r.hidden = false;
     r.innerHTML = '';
-    r.appendChild(Object.assign(document.createElement('div'), { className: 'rr-title', textContent: title }));
+    r.appendChild(Object.assign(document.createElement('div'), { className: 'rr-title', textContent: `Trace replay · ${title}` }));
     r.appendChild(Object.assign(document.createElement('div'), { className: 'rr-step', textContent: stepText }));
     r.appendChild(Object.assign(document.createElement('div'), { className: 'rr-kind', textContent: `Current event: ${kind}` }));
     r.appendChild(Object.assign(document.createElement('div'), { className: 'rr-detail', textContent: detail }));
@@ -336,9 +336,9 @@ function main(): void {
       onEvent: (ev, i, n) => {
         routeLayer.applyTraceEvent(ev);
         const desc = describeTraceEvent(ev, nameOf, replayUnit);
-        setReplayReadout(title, `Step ${i + 1} / ${n}`, desc.kind, desc.detail, desc.sub ?? null);
+        setReplayReadout(title, `Step ${i + 1} of ${n}`, desc.kind, desc.detail, desc.sub ?? null);
         replayOverlay.hidden = false;
-        replayOverlay.textContent = `REPLAY · ${title} · ${i + 1}/${n} · ${desc.kind}`;
+        replayOverlay.textContent = `Replaying ${title} — ${i + 1}/${n} · ${desc.kind}`;
       },
       onProgress: (i, n) => {
         ui.replay.progress.textContent = `${i} / ${n}`;
@@ -443,9 +443,9 @@ function main(): void {
       onEvent: (ev, i, n) => {
         routeLayer.applyTraceEvent(ev);
         const desc = describeTraceEvent(ev, nameOf, 'm');
-        setReplayReadout('RE-ROUTE (Dijkstra)', `Step ${i + 1} / ${n}`, desc.kind, desc.detail, desc.sub ?? null);
+        setReplayReadout('Re-route (Dijkstra)', `Step ${i + 1} of ${n}`, desc.kind, desc.detail, desc.sub ?? null);
         replayOverlay.hidden = false;
-        replayOverlay.textContent = `REPLAY · RE-ROUTE · ${i + 1}/${n} · ${desc.kind}`;
+        replayOverlay.textContent = `Replaying re-route — ${i + 1}/${n} · ${desc.kind}`;
       },
       onProgress: (i, n) => {
         ui.replay.progress.textContent = `${i} / ${n} (re-route)`;
@@ -470,12 +470,11 @@ function main(): void {
   const updateBlockChip = (): void => {
     const n = state.blocks.length;
     ui.blockChip.hidden = n === 0;
-    ui.blockChip.textContent = n === 1 ? '1 WALKWAY BLOCKED' : `${n} WALKWAYS BLOCKED`;
+    ui.blockChip.textContent = n === 1 ? '1 walkway blocked' : `${n} walkways blocked`;
     blockChipOverlay.hidden = !ui.blockMode.checked;
-    blockChipOverlay.textContent =
-      ui.blockMode.checked
-        ? `⛔ BLOCK MODE${n > 0 ? ` · ${n} blocked` : ''} — click a walkway to block it · click a red one to unblock`
-        : '';
+    blockChipOverlay.textContent = ui.blockMode.checked
+      ? `Block mode${n > 0 ? ` · ${n} blocked` : ''} — click a walkway to block it, click a red one to unblock`
+      : '';
   };
 
   // ── raycast click (block mode + click-to-focus) ──────────────────────────
