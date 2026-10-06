@@ -3,19 +3,25 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "DSA-based route navigation engine (Dijkstra, hand-rolled binary min-heap, execution tracing, path reconstruction) with a data-driven design for real-world maps; 3D visualization arrives in a later phase.",
+  "description": "DSA-based route navigation (Dijkstra, A*, BFS, DFS, hand-rolled binary min-heap, execution tracing, path reconstruction) with a data-driven design and a Three.js 3D visualization over a real-world EPCOT dataset.",
   "engines": {
     "node": ">=20.19"
   },
   "scripts": {
     "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/three": "^0.186.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.3",
     "vitest": "^5.0.3"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
   }
 }
