@@ -2,11 +2,14 @@
  * viz/route-layer.ts
  *
  * Everything that changes while an algorithm runs and after it finishes:
- *   - start / destination markers
+ *   - start / destination markers (green / orange-red, prominent)
  *   - visited-node and active-edge highlights driven by TraceEvent replay
- *   - the final route (prominent tube + moving pulse) and an optional
- *     alternative route (different colour)
- *   - blocked-edge markers (red X) for the blocked-path simulation
+ *   - the final route (bright cyan tube + moving pulse) and an optional
+ *     alternative route (orange)
+ *   - route emphasis: unrelated edges/nodes are DIMMED while a route shows,
+ *     so the selected path reads instantly — the underlying graph stays
+ *     visible (dimmed, never removed)
+ *   - hovered walkway highlight + blocked-edge markers (red)
  *
  * This layer only VISUALIZES engine output (RouteResult / TraceEvent).
  * It contains no pathfinding logic of its own.
@@ -16,21 +19,33 @@ import * as THREE from 'three';
 import type { TraceEvent } from '../engine/engine';
 import { pairKey, type CampusMeshes } from './campus-mesh';
 
-export const ROUTE_COLOR = 0x22d3ee; // primary route — cyan
+export const ROUTE_COLOR = 0x22d3ee; // primary route — bright cyan
 export const ALT_ROUTE_COLOR = 0xfb923c; // alternative route — orange
 export const VISITED_COLOR = 0xfbbf24; // settled nodes — amber
 export const BLOCKED_COLOR = 0xef4444; // blocked edges — red
 
 const NODE_BASE_COLOR = 0x9fb0c4;
-const EDGE_BASE_COLOR = 0x6d7c8e;
-const WALKWAY_RADIUS = 3;
+const EDGE_FALLBACK_COLOR = 0x71829a;
+const NODE_DIM_COLOR = 0x64748b; // nodes while a route is displayed (unrelated)
+const EDGE_DIM_COLOR = 0x48546a; // edges while a route is displayed (unrelated)
+const ROUTE_NODE_COLOR = 0x9fe6f5; // nodes ON the active route
+const HOVER_COLOR = 0xbcd3ea;
+const HOVER_EMISSIVE = 0x1d3a49;
 
 const FLASH_MS = 260;
 
 interface FlashEntry {
   mesh: THREE.Mesh;
   until: number;
-  color: number;
+}
+
+function baseColorOf(mesh: THREE.Mesh): number {
+  const c = mesh.userData.baseColor;
+  return typeof c === 'number' ? c : EDGE_FALLBACK_COLOR;
+}
+
+function isBlockedEdge(mesh: THREE.Mesh): boolean {
+  return (mesh.material as THREE.MeshStandardMaterial).color.getHex() === BLOCKED_COLOR;
 }
 
 export class RouteLayer {
@@ -45,6 +60,10 @@ export class RouteLayer {
   private targetMarker: THREE.Group | null = null;
   private readonly visited = new Set<string>();
 
+  /** Paths currently emphasized (dimming everything else). */
+  private emphasisPaths: readonly (readonly string[])[] | null = null;
+  private hoverMesh: THREE.Mesh | null = null;
+
   constructor(scene: THREE.Scene, meshes: CampusMeshes) {
     this.meshes = meshes;
     this.group.name = 'route-layer';
@@ -56,7 +75,7 @@ export class RouteLayer {
   setStart(id: string): void {
     this.clearStart();
     const p = this.meshes.worldPos(id);
-    const m = marker(0x4ade80);
+    const m = marker(0x4ade80); // green
     m.position.copy(p);
     this.startMarker = m;
     this.group.add(m);
@@ -65,18 +84,18 @@ export class RouteLayer {
   setTarget(id: string): void {
     this.clearTarget();
     const p = this.meshes.worldPos(id);
-    const m = marker(0xf87171);
+    const m = marker(0xf97316); // orange-red
     m.position.copy(p);
     this.targetMarker = m;
     this.group.add(m);
   }
 
-  /** Colour the target marker (green = reachable, red = unreachable). */
+  /** Colour the target marker (orange-red = reachable, grey = unreachable). */
   setTargetState(ok: boolean): void {
     if (this.targetMarker === null) return;
     const beam = this.targetMarker.getObjectByName('beam');
     if (beam instanceof THREE.Mesh) {
-      (beam.material as THREE.MeshBasicMaterial).color.set(ok ? 0xf87171 : 0x9ca3af);
+      (beam.material as THREE.MeshBasicMaterial).color.set(ok ? 0xf97316 : 0x9ca3af);
     }
   }
 
@@ -92,19 +111,13 @@ export class RouteLayer {
 
   // ── trace replay visuals ─────────────────────────────────────────────────
 
-  /** Reset all exploration highlights (call before starting a replay). */
+  /** Reset all exploration highlights and route emphasis (before a replay). */
   resetHighlights(): void {
     this.visited.clear();
+    this.clearEmphasis();
     for (const node of this.meshes.nodes.values()) {
       node.material.color.set(NODE_BASE_COLOR);
       node.material.emissive.set(0x000000);
-    }
-    for (const e of this.meshes.edges.values()) {
-      const mat = e.material as THREE.MeshStandardMaterial;
-      if (!isBlockedEdge(e)) {
-        mat.color.set(EDGE_BASE_COLOR);
-        mat.emissive.set(0x000000);
-      }
     }
     this.flashes.length = 0;
   }
@@ -127,7 +140,7 @@ export class RouteLayer {
         const edge = this.meshes.edgeByPair.get(pairKey(ev.fromId, ev.toId));
         if (edge !== undefined && !isBlockedEdge(edge)) {
           (edge.material as THREE.MeshStandardMaterial).emissive.set(ev.improved ? 0x0e5f6e : 0x333a45);
-          this.flashes.push({ mesh: edge, until: this.now + FLASH_MS, color: ev.improved ? 0x22d3ee : 0x8fa0bd });
+          this.flashes.push({ mesh: edge, until: this.now + FLASH_MS });
         }
         break;
       }
@@ -137,8 +150,9 @@ export class RouteLayer {
     }
   }
 
-  // ── final routes ─────────────────────────────────────────────────────────
+  // ── final routes + emphasis ──────────────────────────────────────────────
 
+  /** Show one route as a bright tube; `withPulse` adds the travelling marker. */
   showRoute(path: readonly string[], color: number, withPulse: boolean): THREE.Mesh | null {
     if (path.length < 2) return null;
     const pts: THREE.Vector3[] = path.map((id) => this.meshes.worldPos(id).add(new THREE.Vector3(0, 7, 0)));
@@ -146,12 +160,12 @@ export class RouteLayer {
     for (let i = 0; i + 1 < pts.length; i += 1) {
       curve.add(new THREE.LineCurve3(pts[i]!, pts[i + 1]!));
     }
-    const geo = new THREE.TubeGeometry(curve, Math.max(8, (pts.length - 1) * 4), WALKWAY_RADIUS, 10, false);
+    const geo = new THREE.TubeGeometry(curve, Math.max(8, (pts.length - 1) * 4), 3, 10, false);
     const mat = new THREE.MeshStandardMaterial({
       color,
       emissive: color,
-      emissiveIntensity: 0.55,
-      roughness: 0.4,
+      emissiveIntensity: 0.6,
+      roughness: 0.35,
       flatShading: false,
     });
     const tube = new THREE.Mesh(geo, mat);
@@ -159,7 +173,7 @@ export class RouteLayer {
     this.group.add(tube);
 
     if (withPulse) {
-      const cursor = new THREE.Mesh(new THREE.SphereGeometry(4.5, 14, 10), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+      const cursor = new THREE.Mesh(new THREE.SphereGeometry(5, 14, 10), new THREE.MeshBasicMaterial({ color: 0xffffff }));
       this.group.add(cursor);
       const segLengths: number[] = [];
       let total = 0;
@@ -173,6 +187,85 @@ export class RouteLayer {
     return tube;
   }
 
+  /**
+   * Emphasize the given route paths: dim unrelated edges/nodes slightly so
+   * the route reads instantly, while the graph underneath stays visible.
+   * Pass every route that should stay bright (primary + alternative).
+   */
+  applyRouteEmphasis(paths: readonly (readonly string[])[]): void {
+    this.emphasisPaths = paths;
+    const brightNodes = new Set<string>();
+    const brightEdges = new Set<string>();
+    for (const path of paths) {
+      for (let i = 0; i < path.length; i += 1) {
+        brightNodes.add(path[i]!);
+        if (i + 1 < path.length) brightEdges.add(pairKey(path[i]!, path[i + 1]!));
+      }
+    }
+    for (const e of this.meshes.edges.values()) {
+      if (isBlockedEdge(e)) continue;
+      const mat = e.material as THREE.MeshStandardMaterial;
+      const pair = pairKey(e.userData.fromId as string, e.userData.toId as string);
+      if (brightEdges.has(pair)) {
+        mat.color.set(baseColorOf(e));
+        mat.emissive.set(0x083040); // subtle glow on route edges
+      } else {
+        mat.color.set(EDGE_DIM_COLOR);
+        mat.emissive.set(0x000000);
+      }
+    }
+    for (const [id, node] of this.meshes.nodes) {
+      if (brightNodes.has(id)) {
+        node.material.color.set(ROUTE_NODE_COLOR);
+        node.material.emissive.set(0x052028);
+      } else {
+        node.material.color.set(NODE_DIM_COLOR);
+        node.material.emissive.set(0x000000);
+      }
+    }
+  }
+
+  /** Restore base colours (no emphasis). */
+  clearEmphasis(): void {
+    this.emphasisPaths = null;
+    for (const e of this.meshes.edges.values()) {
+      if (isBlockedEdge(e)) continue;
+      const mat = e.material as THREE.MeshStandardMaterial;
+      mat.color.set(baseColorOf(e));
+      mat.emissive.set(0x000000);
+    }
+    for (const node of this.meshes.nodes.values()) {
+      node.material.color.set(NODE_BASE_COLOR);
+      node.material.emissive.set(0x000000);
+    }
+  }
+
+  // ── hover (block-path targeting) ─────────────────────────────────────────
+
+  setHoverEdge(mesh: THREE.Mesh | null): void {
+    if (this.hoverMesh === mesh) return;
+    // Restore previous hover.
+    if (this.hoverMesh !== null && !isBlockedEdge(this.hoverMesh)) {
+      this.restoreEdgeState(this.hoverMesh);
+    }
+    this.hoverMesh = mesh;
+    if (mesh !== null && !isBlockedEdge(mesh)) {
+      const mat = mesh.material as THREE.MeshStandardMaterial;
+      mat.color.set(HOVER_COLOR);
+      mat.emissive.set(HOVER_EMISSIVE);
+    }
+  }
+
+  private restoreEdgeState(mesh: THREE.Mesh): void {
+    if (this.emphasisPaths !== null) {
+      this.applyRouteEmphasis(this.emphasisPaths);
+      return;
+    }
+    const mat = mesh.material as THREE.MeshStandardMaterial;
+    mat.color.set(baseColorOf(mesh));
+    mat.emissive.set(0x000000);
+  }
+
   // ── blocked edges ────────────────────────────────────────────────────────
 
   setBlocked(edgeId: string, blocked: boolean): void {
@@ -183,10 +276,8 @@ export class RouteLayer {
       const edge = this.meshes.edges.get(edgeId);
       if (edge !== undefined) {
         const mat = edge.material as THREE.MeshStandardMaterial;
-        mat.color.set(EDGE_BASE_COLOR);
+        mat.color.set(baseColorOf(edge));
         mat.emissive.set(0x000000);
-        mat.opacity = 1;
-        mat.transparent = false;
       }
       return;
     }
@@ -194,9 +285,9 @@ export class RouteLayer {
     if (edge === undefined) return;
     const a = this.meshes.worldPos(edge.userData.fromId as string);
     const b = this.meshes.worldPos(edge.userData.toId as string);
-    const marker = blockedMarker(a.clone().add(b).multiplyScalar(0.5));
-    this.blockedMarkers.set(edgeId, marker);
-    this.group.add(marker);
+    const markerGroup = blockedMarker(a.clone().add(b).multiplyScalar(0.5));
+    this.blockedMarkers.set(edgeId, markerGroup);
+    this.group.add(markerGroup);
     const mat = edge.material as THREE.MeshStandardMaterial;
     mat.color.set(BLOCKED_COLOR);
     mat.emissive.set(0x551111);
@@ -214,6 +305,7 @@ export class RouteLayer {
     }
     for (const p of this.pulses) this.group.remove(p.cursor);
     this.pulses.length = 0;
+    this.clearEmphasis();
   }
 
   clearMarkers(): void {
@@ -236,10 +328,8 @@ export class RouteLayer {
     for (let i = this.flashes.length - 1; i >= 0; i -= 1) {
       const f = this.flashes[i]!;
       if (this.now >= f.until) {
-        const mat = f.mesh.material as THREE.MeshStandardMaterial;
-        mat.emissive.set(0x000000);
-        if (!isBlockedEdge(f.mesh)) {
-          mat.color.set(EDGE_BASE_COLOR);
+        if (!isBlockedEdge(f.mesh) && this.hoverMesh !== f.mesh) {
+          this.restoreEdgeState(f.mesh);
         }
         this.flashes.splice(i, 1);
       }
@@ -263,29 +353,31 @@ export class RouteLayer {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-function isBlockedEdge(mesh: THREE.Mesh): boolean {
-  const mat = mesh.material as THREE.MeshStandardMaterial;
-  return mat.color.getHex() === BLOCKED_COLOR;
-}
-
 function marker(color: number): THREE.Group {
   const g = new THREE.Group();
   const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(16, 1.8, 10, 40),
+    new THREE.TorusGeometry(20, 2, 10, 44),
     new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 }),
   );
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 1.4;
   g.add(ring);
+  const inner = new THREE.Mesh(
+    new THREE.TorusGeometry(11, 1.2, 8, 32),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.65 }),
+  );
+  inner.rotation.x = -Math.PI / 2;
+  inner.position.y = 1.6;
+  g.add(inner);
   const beam = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.6, 1.6, 46, 8, 1, true),
-    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4 }),
+    new THREE.CylinderGeometry(1.8, 1.8, 52, 8, 1, true),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.45 }),
   );
   beam.name = 'beam';
-  beam.position.y = 24;
+  beam.position.y = 27;
   g.add(beam);
-  const cone = new THREE.Mesh(new THREE.ConeGeometry(5, 10, 4), new THREE.MeshBasicMaterial({ color }));
-  cone.position.y = 50;
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(6, 12, 4), new THREE.MeshBasicMaterial({ color }));
+  cone.position.y = 58;
   cone.rotation.x = Math.PI;
   g.add(cone);
   return g;
@@ -293,18 +385,18 @@ function marker(color: number): THREE.Group {
 
 function blockedMarker(pos: THREE.Vector3): THREE.Group {
   const g = new THREE.Group();
-  const barGeo = new THREE.BoxGeometry(26, 3.2, 4.5);
+  const barGeo = new THREE.BoxGeometry(28, 3.4, 4.8);
   const mat = new THREE.MeshBasicMaterial({ color: BLOCKED_COLOR });
   const a = new THREE.Mesh(barGeo, mat);
   a.rotation.z = Math.PI / 4;
   const b = new THREE.Mesh(barGeo, mat);
   b.rotation.z = -Math.PI / 4;
   g.add(a, b);
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(19, 1.6, 8, 36), new THREE.MeshBasicMaterial({ color: BLOCKED_COLOR, transparent: true, opacity: 0.8 }));
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(21, 1.6, 8, 36), new THREE.MeshBasicMaterial({ color: BLOCKED_COLOR, transparent: true, opacity: 0.8 }));
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = -1;
   g.add(ring);
   g.position.copy(pos);
-  g.position.y = Math.max(6, pos.y + 6);
+  g.position.y = Math.max(7, pos.y + 7);
   return g;
 }

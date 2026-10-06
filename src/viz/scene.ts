@@ -14,7 +14,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 export const SCENE_BACKGROUND = 0x0b1220;
 
-const INITIAL_DIRECTION = new THREE.Vector3(0.42, 0.9, 0.66).normalize(); // 3/4 aerial from the south-east
+const INITIAL_DIRECTION = new THREE.Vector3(0.38, 0.74, 0.64).normalize(); // lower 3/4 aerial — park reads as a landscape, not a top-down map
 const UP = new THREE.Vector3(0, 1, 0);
 const FOCUS_DISTANCE = 240;
 const TWEEN_SECONDS = 0.9;
@@ -139,7 +139,7 @@ export class SceneManager {
         }
       }
     }
-    distance *= 1.1; // margin
+    distance *= 1.08; // comfortable margin
 
     const toPos = center.clone().addScaledVector(INITIAL_DIRECTION, distance);
     if (animate) {

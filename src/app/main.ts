@@ -26,7 +26,8 @@ import { SceneManager } from '../viz/scene';
 import { buildCampusLayout } from '../viz/layout';
 import { buildCampusMeshes, pairKey } from '../viz/campus-mesh';
 import { RouteLayer, ROUTE_COLOR, ALT_ROUTE_COLOR } from '../viz/route-layer';
-import { TraceReplayer } from '../viz/replay';
+import { TraceReplayer, describeTraceEvent } from '../viz/replay';
+import { visibleLabelIds, type LabelPlacement, type LabelTier } from '../viz/label-policy';
 import { buildControls } from './ui/controls';
 import {
   pathLengthMeters,
@@ -45,6 +46,25 @@ const ALGO_LABEL: Record<AlgorithmId, string> = {
   bfs: 'BFS',
 };
 
+/** BFS reports hops, not metres — the replay readout must say so. */
+const ALGO_UNIT: Record<AlgorithmId, string> = {
+  dijkstra: 'm',
+  astar: 'm',
+  bfs: 'hops',
+};
+
+/**
+ * Label importance tier (drives zoom-aware visibility, see label-policy.ts):
+ *   major  — pavilions, gates, areas, front-of-park landmarks (always on)
+ *   medium — hubs, plazas and other connector nodes
+ *   detail — pavilion-internal attractions / minor landmarks (close zoom only)
+ */
+function tierOf(v: { major: boolean; type: string }): LabelTier {
+  if (v.major) return 'major';
+  if (v.type === 'attraction' || v.type === 'landmark') return 'detail';
+  return 'medium';
+}
+
 function main(): void {
   const appRoot = document.getElementById('app');
   if (appRoot === null) throw new Error('#app missing');
@@ -57,6 +77,7 @@ function main(): void {
     edgeWeight.set(pairKey(e.from, e.to), e.weight);
   }
   const weightOf = (a: string, b: string): number => edgeWeight.get(pairKey(a, b)) ?? 0;
+  const nameOf = (id: string): string => loaded.dataset.vertices.find((v) => v.id === id)?.name ?? id;
 
   // ── controls (sidebar is appended to #app first, before the viewport) ─────
   const items: SearchItem[] = loaded.dataset.vertices.map((v) => ({
@@ -72,6 +93,7 @@ function main(): void {
     blocks: [],
   };
   let replayer: TraceReplayer | null = null;
+  let replayUnit = 'm';
 
   const ui = buildControls(appRoot, {
     items,
@@ -85,6 +107,7 @@ function main(): void {
         state.to = id;
         routeLayer.setTarget(id);
       }
+      labelsDirty = true; // start/destination labels are essential
       scene.focusOn(meshes.worldPos(id));
     },
   });
@@ -100,20 +123,169 @@ function main(): void {
   scene.scene.add(meshes.group);
   const routeLayer = new RouteLayer(scene.scene, meshes);
 
-  // Frame the whole park (initial view) and keep a Box3 for RESET CAMERA.
-  const worldBox = new THREE.Box3().setFromObject(meshes.group);
-  scene.frameAll(worldBox);
+  // Camera framing is derived from the dataset's useful bounds (contentBox),
+  // never from a hardcoded pixel-dependent position — generic for any dataset.
+  scene.frameAll(meshes.contentBox);
 
-  // Per-frame: route pulse/flash animation + constant-screen-size labels.
-  scene.onTick((_dt, _t) => {
-    routeLayer.tick(performance.now());
+  // Block-mode indicator overlay (top-left of the viewport).
+  const blockChipOverlay = document.createElement('div');
+  blockChipOverlay.className = 'block-chip';
+  blockChipOverlay.hidden = true;
+
+  // Replay readout element lives in the sidebar (ui.replay.readout); the
+  // viewport keeps one line of context when a replay is running.
+  const replayOverlay = document.createElement('div');
+  replayOverlay.className = 'replay-overlay';
+  replayOverlay.hidden = true;
+  viewport.append(blockChipOverlay, replayOverlay);
+
+  // ── zoom-aware labels ─────────────────────────────────────────────────────
+  const labelTiers = new Map<string, LabelTier>();
+  for (const v of layout.vertices) labelTiers.set(v.id, tierOf(v));
+  let labelsDirty = true;
+  let hoveredVertexIds = new Set<string>();
+  let lastLabelCamPos = new THREE.Vector3(Infinity, Infinity, Infinity);
+  let lastLabelCamTarget = new THREE.Vector3(Infinity, Infinity, Infinity);
+
+  const essentialLabelIds = (): Set<string> => {
+    const set = new Set<string>();
+    if (state.from !== null) set.add(state.from);
+    if (state.to !== null) set.add(state.to);
+    for (const id of hoveredVertexIds) set.add(id);
+    return set;
+  };
+
+  const updateLabels = (): void => {
+    if (!meshes.labelsVisible()) return;
     const cam = scene.camera;
-    for (const s of meshes.labels.values()) {
-      const base = s.userData.baseScale as THREE.Vector2;
-      const d = cam.position.distanceTo(s.position);
+    const target = scene.controls.target;
+    const camDist = cam.position.distanceTo(target);
+
+    // Recompute placements only when the camera (or essentials) moved.
+    const camMoved =
+      cam.position.distanceToSquared(lastLabelCamPos) > 0.25 ||
+      target.distanceToSquared(lastLabelCamTarget) > 0.25;
+    if (!camMoved && !labelsDirty) return;
+    lastLabelCamPos.copy(cam.position);
+    lastLabelCamTarget.copy(target);
+    labelsDirty = false;
+
+    const W = scene.renderer.domElement.clientWidth;
+    const H = scene.renderer.domElement.clientHeight;
+    const tanV = Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
+    const essentials = essentialLabelIds();
+    const placements: LabelPlacement[] = [];
+    const projected = new THREE.Vector3();
+
+    for (const [id, sprite] of meshes.labels) {
+      // Constant-screen-size-ish scaling first (readability), then measure.
+      const base = sprite.userData.baseScale as THREE.Vector2;
+      const d = cam.position.distanceTo(sprite.position);
       const k = THREE.MathUtils.clamp(d / 1500, 0.55, 2.3);
-      s.scale.set(base.x * k, base.y * k, 1);
+      sprite.scale.set(base.x * k, base.y * k, 1);
+
+      projected.copy(sprite.position).project(cam);
+      if (projected.z > 1) {
+        sprite.visible = false;
+        continue; // behind the camera
+      }
+      const px = ((projected.x + 1) / 2) * W;
+      const py = ((1 - projected.y) / 2) * H;
+      const perUnit = H / (2 * d * tanV); // pixels per world unit at this depth
+      const halfW = (sprite.scale.x * perUnit) / 2;
+      const halfH = (sprite.scale.y * perUnit) / 2;
+      placements.push({
+        id,
+        tier: labelTiers.get(id) ?? 'medium',
+        essential: essentials.has(id),
+        distance: d,
+        rect: { left: px - halfW, top: py - halfH, right: px + halfW, bottom: py + halfH },
+      });
     }
+
+    const visible = visibleLabelIds(placements, camDist);
+    for (const [id, sprite] of meshes.labels) {
+      const show = visible.has(id);
+      sprite.visible = show;
+      // Subtle distance fade so far labels recede (visibility, not data, changes).
+      const mat = sprite.material as THREE.SpriteMaterial;
+      const d = cam.position.distanceTo(sprite.position);
+      if (show) {
+        const essential = essentials.has(id);
+        const tier = labelTiers.get(id) ?? 'medium';
+        mat.opacity = essential || tier === 'major' ? 1 : THREE.MathUtils.clamp(1.2 - d / 2200, 0.45, 1);
+      }
+    }
+  };
+
+  // ── hover picking (easier block-mode targeting + hovered label priority) ──
+  const raycaster = new THREE.Raycaster();
+  const pointerNdc = new THREE.Vector2();
+  let pointerPx: { x: number; y: number } | null = null;
+  let hoverDirty = false;
+  let hoveredEdgeMesh: THREE.Mesh | null = null;
+  let downAt: { x: number; y: number } | null = null;
+
+  const pickObject = (): THREE.Object3D | null => {
+    if (pointerPx === null) return null;
+    const rect = scene.renderer.domElement.getBoundingClientRect();
+    pointerNdc.x = ((pointerPx.x - rect.left) / rect.width) * 2 - 1;
+    pointerNdc.y = -((pointerPx.y - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointerNdc, scene.camera);
+    const hits = raycaster.intersectObjects([...meshes.edges.values(), ...meshes.nodes.values()], false);
+    return hits.length > 0 ? hits[0]!.object : null;
+  };
+
+  const updateHover = (): void => {
+    if (!hoverDirty) return;
+    hoverDirty = false;
+    if (pointerPx === null) {
+      routeLayer.setHoverEdge(null);
+      if (hoveredEdgeMesh !== null || hoveredVertexIds.size > 0) {
+        hoveredEdgeMesh = null;
+        hoveredVertexIds = new Set();
+        labelsDirty = true;
+      }
+      return;
+    }
+    const hit = pickObject();
+    const newEdge: THREE.Mesh | null =
+      hit !== null && hit.userData.edgeId !== undefined ? (hit as THREE.Mesh) : null;
+    const newVerts = new Set<string>();
+    if (newEdge !== null) {
+      newVerts.add(newEdge.userData.fromId as string);
+      newVerts.add(newEdge.userData.toId as string);
+    } else if (hit !== null && hit.userData.vertexId !== undefined) {
+      newVerts.add(hit.userData.vertexId as string);
+    }
+    routeLayer.setHoverEdge(newEdge);
+    const changed =
+      newEdge !== hoveredEdgeMesh || (newVerts.size === hoveredVertexIds.size && [...newVerts].some((v) => !hoveredVertexIds.has(v)));
+    if (changed) {
+      hoveredEdgeMesh = newEdge;
+      hoveredVertexIds = newVerts;
+      labelsDirty = true;
+    }
+    // Cursor: crosshair over a walkway in block mode; pointer over anything pickable.
+    const canvas = scene.renderer.domElement;
+    canvas.style.cursor = ui.blockMode.checked && newEdge !== null ? 'crosshair' : hit !== null ? 'pointer' : 'grab';
+  };
+
+  scene.renderer.domElement.addEventListener('pointermove', (e: PointerEvent) => {
+    pointerPx = { x: e.clientX, y: e.clientY };
+    hoverDirty = true;
+  });
+  scene.renderer.domElement.addEventListener('pointerleave', () => {
+    pointerPx = null;
+    hoverDirty = true;
+  });
+
+  // Per-frame: replay advance (dt seconds), route pulse/flash, hover, labels.
+  scene.onTick((dt) => {
+    replayer?.tick(dt);
+    routeLayer.tick(performance.now());
+    updateHover();
+    updateLabels();
   });
 
   const setPanelMessage = (panel: HTMLElement, text: string): void => {
@@ -126,18 +298,48 @@ function main(): void {
     for (const p of Object.values(ui.panels)) clearPanel(p);
   };
 
+  // ── replay readout (TRACE REPLAY panel) ───────────────────────────────────
+  const setReplayReadout = (title: string, stepText: string, kind: string, detail: string, sub: string | null): void => {
+    const r = ui.replay.readout;
+    r.hidden = false;
+    r.innerHTML = '';
+    r.appendChild(Object.assign(document.createElement('div'), { className: 'rr-title', textContent: title }));
+    r.appendChild(Object.assign(document.createElement('div'), { className: 'rr-step', textContent: stepText }));
+    r.appendChild(Object.assign(document.createElement('div'), { className: 'rr-kind', textContent: `Current event: ${kind}` }));
+    r.appendChild(Object.assign(document.createElement('div'), { className: 'rr-detail', textContent: detail }));
+    if (sub !== null) r.appendChild(Object.assign(document.createElement('div'), { className: 'rr-sub', textContent: sub }));
+  };
+
+  const clearReplayReadout = (): void => {
+    ui.replay.readout.hidden = true;
+    ui.replay.readout.innerHTML = '';
+  };
+
   const stopReplay = (): void => {
     replayer?.pause();
     replayer = null;
     ui.replay.progress.textContent = '0 / 0';
+    replayOverlay.hidden = true;
+    clearReplayReadout();
   };
 
-  const startReplay = (result: RouteResult, onDone: (r: RouteResult) => void): void => {
+  const startReplay = (
+    result: RouteResult,
+    title: string,
+    onDone: (r: RouteResult) => void,
+  ): void => {
     routeLayer.clearRoutes();
     routeLayer.resetHighlights();
     stopReplay();
+    replayUnit = ALGO_UNIT[state.algo];
     replayer = new TraceReplayer(result.trace, {
-      onEvent: (ev) => routeLayer.applyTraceEvent(ev),
+      onEvent: (ev, i, n) => {
+        routeLayer.applyTraceEvent(ev);
+        const desc = describeTraceEvent(ev, nameOf, replayUnit);
+        setReplayReadout(title, `Step ${i + 1} / ${n}`, desc.kind, desc.detail, desc.sub ?? null);
+        replayOverlay.hidden = false;
+        replayOverlay.textContent = `REPLAY · ${title} · ${i + 1}/${n} · ${desc.kind}`;
+      },
       onProgress: (i, n) => {
         ui.replay.progress.textContent = `${i} / ${n}`;
       },
@@ -165,14 +367,16 @@ function main(): void {
     clearPanel(ui.panels.alternative);
     clearPanel(ui.panels.block);
     const result = findRoute(graph, from, to, algo);
-    startReplay(result, (r) => {
+    startReplay(result, ALGO_LABEL[algo], (r) => {
       if (r.status === 'ok') {
         const isBfs = algo === 'bfs';
         const routeLen = isBfs ? pathLengthMeters(r.path, weightOf) : null;
         routeLayer.showRoute(r.path, ROUTE_COLOR, true);
+        routeLayer.applyRouteEmphasis([r.path]);
         routeLayer.setTargetState(true);
         renderRouteResult(ui.panels.route, r, ALGO_LABEL[algo], routeLen);
       } else {
+        routeLayer.clearEmphasis();
         routeLayer.setTargetState(false);
         renderRouteResult(ui.panels.route, r, ALGO_LABEL[algo], null);
       }
@@ -205,6 +409,9 @@ function main(): void {
       routeLayer.showRoute(alt.primary.path, ROUTE_COLOR, false);
       if (alt.alternative !== null) {
         routeLayer.showRoute(alt.alternative.path, ALT_ROUTE_COLOR, true);
+        routeLayer.applyRouteEmphasis([alt.primary.path, alt.alternative.path]);
+      } else {
+        routeLayer.applyRouteEmphasis([alt.primary.path]);
       }
     }
     renderAlternative(ui.panels.alternative, alt);
@@ -216,11 +423,13 @@ function main(): void {
     stopReplay();
     routeLayer.clearAll();
     clearAllPanels();
+    updateBlockChip();
   };
 
   // ── blocked-path simulation ───────────────────────────────────────────────
   const rerunWithBlocks = (): void => {
     if (state.from === null || state.to === null || state.from === state.to) return;
+    updateBlockChip();
     if (state.blocks.length === 0) {
       clearPanel(ui.panels.block);
       doFindRoute();
@@ -231,15 +440,23 @@ function main(): void {
     routeLayer.resetHighlights();
     stopReplay();
     replayer = new TraceReplayer(sim.after.trace, {
-      onEvent: (ev) => routeLayer.applyTraceEvent(ev),
+      onEvent: (ev, i, n) => {
+        routeLayer.applyTraceEvent(ev);
+        const desc = describeTraceEvent(ev, nameOf, 'm');
+        setReplayReadout('RE-ROUTE (Dijkstra)', `Step ${i + 1} / ${n}`, desc.kind, desc.detail, desc.sub ?? null);
+        replayOverlay.hidden = false;
+        replayOverlay.textContent = `REPLAY · RE-ROUTE · ${i + 1}/${n} · ${desc.kind}`;
+      },
       onProgress: (i, n) => {
         ui.replay.progress.textContent = `${i} / ${n} (re-route)`;
       },
       onDone: () => {
         if (sim.after.status === 'ok') {
           routeLayer.showRoute(sim.after.path, ROUTE_COLOR, true);
+          routeLayer.applyRouteEmphasis([sim.after.path]);
           routeLayer.setTargetState(true);
         } else {
+          routeLayer.clearEmphasis();
           routeLayer.setTargetState(false);
         }
         renderBlockReport(ui.panels.block, sim.before, sim.after, state.blocks.length);
@@ -249,16 +466,24 @@ function main(): void {
     replayer.play();
   };
 
-  // ── raycasting (block mode + click-to-focus) ──────────────────────────────
-  const raycaster = new THREE.Raycaster();
-  const pointer = new THREE.Vector2();
-  let downAt: { x: number; y: number } | null = null;
+  // Block chips: sidebar count + viewport overlay.
+  const updateBlockChip = (): void => {
+    const n = state.blocks.length;
+    ui.blockChip.hidden = n === 0;
+    ui.blockChip.textContent = n === 1 ? '1 WALKWAY BLOCKED' : `${n} WALKWAYS BLOCKED`;
+    blockChipOverlay.hidden = !ui.blockMode.checked;
+    blockChipOverlay.textContent =
+      ui.blockMode.checked
+        ? `⛔ BLOCK MODE${n > 0 ? ` · ${n} blocked` : ''} — click a walkway to block it · click a red one to unblock`
+        : '';
+  };
 
+  // ── raycast click (block mode + click-to-focus) ──────────────────────────
   const pick = (clientX: number, clientY: number): THREE.Object3D | null => {
     const rect = scene.renderer.domElement.getBoundingClientRect();
-    pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-    pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-    raycaster.setFromCamera(pointer, scene.camera);
+    pointerNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    pointerNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    raycaster.setFromCamera(pointerNdc, scene.camera);
     const hits = raycaster.intersectObjects([...meshes.edges.values(), ...meshes.nodes.values()], false);
     return hits.length > 0 ? hits[0]!.object : null;
   };
@@ -304,7 +529,7 @@ function main(): void {
   ui.btnCompare.addEventListener('click', doCompare);
   ui.btnAlternative.addEventListener('click', doAlternative);
   ui.btnReset.addEventListener('click', doReset);
-  ui.btnCamera.addEventListener('click', () => scene.frameAll(worldBox, true));
+  ui.btnCamera.addEventListener('click', () => scene.frameAll(meshes.contentBox, true));
   ui.btnSwap.addEventListener('click', () => {
     const f = state.from;
     state.from = state.to;
@@ -313,15 +538,24 @@ function main(): void {
     ui.toSelect.set(state.to);
     if (state.from !== null) routeLayer.setStart(state.from);
     if (state.to !== null) routeLayer.setTarget(state.to);
+    labelsDirty = true;
   });
+  const updateAlgoNotes = (): void => {
+    for (const note of ui.algoNotes.querySelectorAll<HTMLElement>('.algo-note')) {
+      note.classList.toggle('active', note.dataset.algo === state.algo);
+    }
+  };
   ui.algorithm.addEventListener('change', () => {
     state.algo = ui.algorithm.value as AlgorithmId;
+    updateAlgoNotes();
   });
   ui.labelsToggle.addEventListener('change', () => {
     meshes.setLabelsVisible(ui.labelsToggle.checked);
+    labelsDirty = true;
   });
   ui.blockMode.addEventListener('change', () => {
-    scene.renderer.domElement.style.cursor = ui.blockMode.checked ? 'crosshair' : 'grab';
+    updateBlockChip();
+    hoverDirty = true; // refresh cursor immediately
   });
   scene.renderer.domElement.style.cursor = 'grab';
 
@@ -335,11 +569,13 @@ function main(): void {
       routeLayer.clearRoutes();
       if (state.from !== null && state.to !== null && state.from !== state.to) {
         const r = findRoute(graph, state.from, state.to, state.algo);
-        startReplay(r, (res) => {
+        startReplay(r, ALGO_LABEL[state.algo], (res) => {
           if (res.status === 'ok') {
             routeLayer.showRoute(res.path, ROUTE_COLOR, true);
+            routeLayer.applyRouteEmphasis([res.path]);
             routeLayer.setTargetState(true);
           } else {
+            routeLayer.clearEmphasis();
             routeLayer.setTargetState(false);
           }
           renderRouteResult(
@@ -357,10 +593,11 @@ function main(): void {
   });
 
   // provenance info
-  ui.infoButton.addEventListener('click', () => {
+  const openInfoPanel = (): void => {
     renderProvenanceInfo(ui.infoPanel.querySelector('.prov-info-body') ?? ui.infoPanel);
     ui.infoPanel.hidden = false;
-  });
+  };
+  ui.infoButton.addEventListener('click', openInfoPanel);
 
   // ── sensible defaults for the demo (Main Entrance → France) ───────────────
   ui.fromSelect.set('gate-main');
@@ -369,6 +606,8 @@ function main(): void {
   state.to = 'pav-france';
   routeLayer.setStart('gate-main');
   routeLayer.setTarget('pav-france');
+  updateAlgoNotes();
+  labelsDirty = true;
 }
 
 main();

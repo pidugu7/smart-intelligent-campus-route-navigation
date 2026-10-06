@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { TraceEvent } from '../../src/engine/engine';
-import { TraceReplayer } from '../../src/viz/replay';
+import { TraceReplayer, describeTraceEvent } from '../../src/viz/replay';
 
 const trace: TraceEvent[] = [
   { type: 'start', sourceId: 'a' },
@@ -109,5 +109,66 @@ describe('TraceReplayer', () => {
     expect(replayer.speed).toBe(120);
     replayer.setSpeed(0);
     expect(replayer.speed).toBe(0.5);
+  });
+});
+
+describe('describeTraceEvent', () => {
+  const nameOf = (id: string): string => `Name-${id}`;
+
+  it('maps start to a START description with the source', () => {
+    const d = describeTraceEvent({ type: 'start', sourceId: 'gate-main' }, nameOf);
+    expect(d.kind).toBe('START');
+    expect(d.detail).toBe('Source: Name-gate-main');
+    expect(d.sub).toBeUndefined();
+  });
+
+  it('maps visit to VISIT with node name and best distance in the given unit', () => {
+    const d = describeTraceEvent({ type: 'visit', vertexId: 'pav-germany', bestDistance: 320.4 }, nameOf);
+    expect(d.kind).toBe('VISIT');
+    expect(d.detail).toBe('Node: Name-pav-germany');
+    expect(d.sub).toBe('best distance 320 m');
+    // unit is caller-controlled (metres vs hops)
+    const dHops = describeTraceEvent({ type: 'visit', vertexId: 'pav-germany', bestDistance: 4 }, nameOf, 'hops');
+    expect(dHops.sub).toBe('best distance 4 hops');
+  });
+
+  it('maps an improving relax to RELAX with edge and new distance', () => {
+    const d = describeTraceEvent(
+      { type: 'relax', fromId: 'a', toId: 'b', oldDistance: 10, newDistance: 4, improved: true },
+      nameOf,
+    );
+    expect(d.kind).toBe('RELAX');
+    expect(d.detail).toBe('Edge: Name-a → Name-b');
+    expect(d.sub).toBe('improved to 4 m');
+  });
+
+  it('maps a non-improving relax (oldDistance null) to RELAX with the current best', () => {
+    const d = describeTraceEvent(
+      { type: 'relax', fromId: 'a', toId: 'b', oldDistance: null, newDistance: 7, improved: false },
+      nameOf,
+    );
+    expect(d.kind).toBe('RELAX');
+    expect(d.detail).toBe('Edge: Name-a → Name-b');
+    expect(d.sub).toBe('no improvement (best stays 7 m)');
+  });
+
+  it('maps finalize to FINALIZE with destination and optimal cost', () => {
+    const d = describeTraceEvent({ type: 'finalize', targetId: 'pav-france', totalDistance: 512.9 }, nameOf);
+    expect(d.kind).toBe('FINALIZE');
+    expect(d.detail).toBe('Destination: Name-pav-france');
+    expect(d.sub).toBe('optimal cost 513 m');
+  });
+
+  it('maps abort to ABORT with an unreachable message and no sub', () => {
+    const d = describeTraceEvent({ type: 'abort', reason: 'unreachable' }, nameOf);
+    expect(d.kind).toBe('ABORT');
+    expect(d.detail).toBe('Destination unreachable (search exhausted)');
+    expect(d.sub).toBeUndefined();
+  });
+
+  it('never invents event kinds — the five schema types are exhaustive', () => {
+    const kinds = new Set<string>();
+    for (const ev of trace) kinds.add(describeTraceEvent(ev, nameOf).kind);
+    expect(kinds).toEqual(new Set(['START', 'VISIT', 'RELAX', 'FINALIZE']));
   });
 });

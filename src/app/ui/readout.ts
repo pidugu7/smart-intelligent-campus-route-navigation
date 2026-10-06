@@ -27,15 +27,6 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
   return n;
 }
 
-function statRow(label: string, value: string, extra?: string): HTMLDivElement {
-  const row = el('div', 'stat-row');
-  row.appendChild(el('span', 'stat-label', label));
-  const val = el('span', 'stat-value', value);
-  row.appendChild(val);
-  if (extra !== undefined) row.appendChild(el('span', 'stat-extra', extra));
-  return row;
-}
-
 function fmtMeters(m: number): string {
   return `${Math.round(m).toLocaleString('en-IN')} m`;
 }
@@ -56,6 +47,14 @@ export function pathLengthMeters(path: readonly string[], weightOf: (a: string, 
   return sum;
 }
 
+/** One cell of the result stats grid. */
+function statCell(grid: HTMLElement, label: string, value: string): void {
+  const cell = el('div', 'stat-cell');
+  cell.appendChild(el('div', 'stat-value', value));
+  cell.appendChild(el('div', 'stat-label', label));
+  grid.appendChild(cell);
+}
+
 // ── route result ────────────────────────────────────────────────────────────
 
 export function renderRouteResult(
@@ -65,44 +64,68 @@ export function renderRouteResult(
   routeLength: number | null,
 ): void {
   container.innerHTML = '';
-  const card = el('div', 'panel-card');
+  const card = el('div', 'panel-card result-card');
 
+  // Unreachable — plain, unambiguous
   if (result.status === 'unreachable') {
     card.appendChild(el('div', 'panel-title', 'No route'));
+    const chipRow = el('div', 'result-status');
+    chipRow.appendChild(el('span', 'status-chip status-no', '✗ Unreachable'));
+    card.appendChild(chipRow);
     card.appendChild(
       el('div', 'result-bad', `${result.source.name} → ${result.target.name}: destination is UNREACHABLE (disconnected after blocks).`),
     );
-    card.appendChild(statRow('Nodes explored', String(result.nodesExpanded)));
+    card.appendChild(el('div', 'provenance-note', `Search explored ${result.nodesExpanded} nodes before exhausting the graph.`));
     container.appendChild(card);
     return;
   }
 
   const isBfs = algoLabel === 'BFS';
+
+  // Title + status line
   card.appendChild(el('div', 'panel-title', `${algoLabel} route`));
-  card.appendChild(
-    el('div', 'route-endpoints', `${result.source.name} → ${result.target.name}`),
-  );
+  const chipRow = el('div', 'result-status');
+  chipRow.appendChild(el('span', 'status-chip status-ok', isBfs ? '✓ Fewest-hop route' : '✓ Optimal route'));
+  chipRow.appendChild(el('span', 'result-endpoints', `${result.source.name} → ${result.target.name}`));
+  card.appendChild(chipRow);
 
+  // Headline metric: big cost + est. walk time side by side
+  const headline = el('div', 'result-headline');
+  const cost = el('div', 'result-cost');
   if (isBfs) {
-    card.appendChild(
-      statRow('Fewest hops', String(result.totalDistance), 'BFS cost = hops (weights ignored by design)'),
-    );
-    if (routeLength !== null) {
-      card.appendChild(statRow('Route length', fmtMeters(routeLength), APPROX_BADGE));
-      const t = estimateWalkTime(routeLength);
-      card.appendChild(statRow('Walk time (est.)', fmtTime(t.estimatedSeconds), `at ${t.speedMetersPerSecond} m/s`));
-    }
+    cost.appendChild(el('span', 'result-cost-value', String(result.totalDistance)));
+    cost.appendChild(el('span', 'result-cost-unit', 'hops · fewest edges'));
   } else {
-    card.appendChild(statRow('Distance', fmtMeters(result.totalDistance), APPROX_BADGE));
-    const t = estimateWalkTime(result.totalDistance);
-    card.appendChild(statRow('Walk time (est.)', fmtTime(t.estimatedSeconds), `at ${t.speedMetersPerSecond} m/s`));
+    cost.appendChild(el('span', 'result-cost-value', Math.round(result.totalDistance).toLocaleString('en-IN')));
+    cost.appendChild(el('span', 'result-cost-unit', 'm · total distance'));
   }
+  headline.appendChild(cost);
+  // BFS: routeLength is the true metre length of the fewest-hop path (weights
+  // ignored by design); weighted algos already report metres.
+  const metersForWalk = isBfs && routeLength !== null ? routeLength : result.totalDistance;
+  const walk = estimateWalkTime(metersForWalk);
+  headline.appendChild(el('div', 'result-walk', `≈ ${fmtTime(walk.estimatedSeconds)} walk · ${walk.speedMetersPerSecond} m/s`));
+  card.appendChild(headline);
 
-  card.appendChild(statRow('Edges on route', String(result.path.length - 1)));
-  card.appendChild(statRow('Nodes expanded', String(result.nodesExpanded)));
-  card.appendChild(statRow('Trace steps', String(result.trace.length)));
+  // Stats grid: edges on route / nodes expanded / trace steps
+  const grid = el('div', 'stat-grid');
+  statCell(grid, 'Edges on route', String(result.path.length - 1));
+  statCell(grid, 'Nodes expanded', String(result.nodesExpanded));
+  statCell(grid, 'Trace steps', String(result.trace.length));
+  if (isBfs && routeLength !== null) {
+    statCell(grid, 'Route length', fmtMeters(routeLength));
+  }
+  card.appendChild(grid);
 
-  card.appendChild(el('div', 'provenance-note', `Distance based on ${APPROX_BADGE} — not a measured real-world value.`));
+  card.appendChild(
+    el(
+      'div',
+      'provenance-note',
+      isBfs
+        ? 'BFS cost = hops (weights ignored by design). Route length above is the digitized metre length of that fewest-hop path.'
+        : `Distance based on ${APPROX_BADGE} — not a measured real-world value.`,
+    ),
+  );
   container.appendChild(card);
 }
 
@@ -110,9 +133,28 @@ export function renderRouteResult(
 
 export function renderComparison(container: HTMLElement, cmp: AlgorithmComparison): void {
   container.innerHTML = '';
-  const card = el('div', 'panel-card');
+  const card = el('div', 'panel-card result-card');
   card.appendChild(el('div', 'panel-title', 'Dijkstra vs A*'));
 
+  // Prominent verdict first
+  if (cmp.sameOptimalCost) {
+    card.appendChild(el('div', 'compare-banner', 'Same optimal cost ✓'));
+  } else {
+    card.appendChild(el('div', 'compare-banner compare-banner-warn', '✗ Costs differ — heuristic assumptions violated for this query'));
+  }
+
+  // Headline efficiency fact: nodes expanded, side by side
+  const facts = el('div', 'compare-facts');
+  const fDi = el('div', 'compare-fact');
+  fDi.appendChild(el('span', 'fact-value', String(cmp.dijkstra.nodesExpanded)));
+  fDi.appendChild(el('span', 'fact-label', 'nodes expanded · Dijkstra'));
+  const fAs = el('div', 'compare-fact');
+  fAs.appendChild(el('span', 'fact-value', String(cmp.astar.nodesExpanded)));
+  fAs.appendChild(el('span', 'fact-label', 'nodes expanded · A*'));
+  facts.append(fDi, fAs);
+  card.appendChild(facts);
+
+  // Detail table
   const table = el('table', 'cmp-table');
   const head = el('tr');
   head.appendChild(el('th', '', 'Metric'));
@@ -120,11 +162,11 @@ export function renderComparison(container: HTMLElement, cmp: AlgorithmCompariso
   head.appendChild(el('th', '', 'A*'));
   table.appendChild(head);
 
-  const row = (metric: string, d: string, a: string, dCls?: string, aCls?: string): void => {
+  const row = (metric: string, d: string, a: string): void => {
     const tr = el('tr');
     tr.appendChild(el('td', 'cmp-metric', metric));
-    tr.appendChild(el('td', dCls, d));
-    tr.appendChild(el('td', aCls, a));
+    tr.appendChild(el('td', '', d));
+    tr.appendChild(el('td', '', a));
     table.appendChild(tr);
   };
 
@@ -132,29 +174,19 @@ export function renderComparison(container: HTMLElement, cmp: AlgorithmCompariso
   const aOk = cmp.astar.status === 'ok';
   row('Status', dOk ? 'ok' : 'unreachable', aOk ? 'ok' : 'unreachable');
   row('Distance', dOk ? fmtMeters(cmp.dijkstra.totalDistance!) : '—', aOk ? fmtMeters(cmp.astar.totalDistance!) : '—');
+  row('Path edges', dOk ? String(cmp.dijkstra.path.length - 1) : '—', aOk ? String(cmp.astar.path.length - 1) : '—');
   row('Nodes expanded', String(cmp.dijkstra.nodesExpanded), String(cmp.astar.nodesExpanded));
   row('Trace steps', String(cmp.dijkstra.traceSteps), String(cmp.astar.traceSteps));
   const dTime = dOk ? fmtTime(estimateWalkTime(cmp.dijkstra.totalDistance!).estimatedSeconds) : '—';
   const aTime = aOk ? fmtTime(estimateWalkTime(cmp.astar.totalDistance!).estimatedSeconds) : '—';
-  row('Est. time', dTime, aTime);
+  row('Est. walk time', dTime, aTime);
   card.appendChild(table);
 
-  if (cmp.sameOptimalCost) {
-    card.appendChild(
-      el(
-        'div',
-        'cmp-note ok',
-        '✓ Same optimal cost — A* with an admissible (Euclidean) heuristic finds the same optimal distance as Dijkstra.',
-      ),
-    );
-  } else {
-    card.appendChild(el('div', 'cmp-note bad', '✗ Costs differ — heuristic assumptions violated for this query.'));
-  }
   card.appendChild(
     el(
       'div',
       'cmp-note',
-      'Expansion counts are reported as measured: A* is NOT always faster — the saving depends on the heuristic and the graph (Δ nodes = Dijkstra − A* = ' +
+      'Expansion counts are reported as measured: A* is NOT guaranteed to expand fewer nodes on every graph or query — the saving depends on how informative the heuristic is (Δ nodes = Dijkstra − A* = ' +
         `${cmp.nodesExpandedDelta}).`,
     ),
   );
@@ -166,7 +198,7 @@ export function renderComparison(container: HTMLElement, cmp: AlgorithmCompariso
 
 export function renderAlternative(container: HTMLElement, alt: AlternativeRouteResult): void {
   container.innerHTML = '';
-  const card = el('div', 'panel-card');
+  const card = el('div', 'panel-card result-card');
   card.appendChild(el('div', 'panel-title', 'Alternative route'));
 
   if (alt.status === 'no-primary-route') {
@@ -175,18 +207,53 @@ export function renderAlternative(container: HTMLElement, alt: AlternativeRouteR
     return;
   }
   const primary = alt.primary!;
-  card.appendChild(statRow('Primary distance', fmtMeters(primary.totalDistance), 'cyan line'));
+
+  // Colour-coded primary vs alternative, readable at a glance
+  const pairRow = el('div', 'alt-pair');
+  const primaryRow = el('div', 'alt-entry');
+  primaryRow.appendChild(el('span', 'alt-dot alt-dot-primary'));
+  primaryRow.appendChild(el('span', 'alt-name', 'Primary'));
+  primaryRow.appendChild(el('span', 'alt-dist', fmtMeters(primary.totalDistance)));
+  pairRow.appendChild(primaryRow);
+
   if (alt.alternative === null) {
+    card.appendChild(pairRow);
     card.appendChild(el('div', 'cmp-note', 'No distinct alternative route exists — the primary path is the only walkable route between these points.'));
     container.appendChild(card);
     return;
   }
+
   const other = alt.alternative;
-  card.appendChild(statRow('Alternative distance', fmtMeters(other.totalDistance), 'orange line'));
-  card.appendChild(statRow('Extra distance', `+${fmtMeters(other.totalDistance - primary.totalDistance)}`));
+  const altRow = el('div', 'alt-entry');
+  altRow.appendChild(el('span', 'alt-dot alt-dot-alt'));
+  altRow.appendChild(el('span', 'alt-name', 'Alternative'));
+  altRow.appendChild(el('span', 'alt-dist', fmtMeters(other.totalDistance)));
+  pairRow.appendChild(altRow);
+  card.appendChild(pairRow);
+
+  const extra = alt.extraDistance ?? other.totalDistance - primary.totalDistance;
+  const extraRow = el('div', 'alt-extra');
+  extraRow.appendChild(el('span', '', `Extra distance: +${fmtMeters(extra)}`));
   const dt = estimateWalkTime(other.totalDistance).estimatedSeconds - estimateWalkTime(primary.totalDistance).estimatedSeconds;
-  card.appendChild(statRow('Extra time (est.)', `+${fmtTime(dt)}`));
-  card.appendChild(el('div', 'cmp-note', 'Guarantee: best cost among all SIMPLE paths distinct from the primary (second-best simple-path cost — not a general k-shortest listing).'));
+  extraRow.appendChild(el('span', '', `Extra walk time: +${fmtTime(dt)}`));
+  card.appendChild(extraRow);
+
+  // Alternating dot list of the alternative's vertex sequence
+  const altSteps = el('ol', 'route-steps route-steps-alt');
+  other.path.forEach((id, i) => {
+    const li = el('li', i === other.path.length - 1 ? 'route-step-end' : undefined, id);
+    li.dataset.vertex = id;
+    altSteps.appendChild(li);
+  });
+  card.appendChild(altSteps);
+
+  card.appendChild(
+    el(
+      'div',
+      'cmp-note',
+      'Guarantee: best cost among all SIMPLE paths distinct from the primary (second-best simple-path cost — not a general k-shortest listing, and not Yen’s algorithm).',
+    ),
+  );
   card.appendChild(el('div', 'provenance-note', `Distances based on ${APPROX_BADGE}.`));
   container.appendChild(card);
 }
@@ -200,38 +267,38 @@ export function renderBlockReport(
   blockedCount: number,
 ): void {
   container.innerHTML = '';
-  const card = el('div', 'panel-card');
+  const card = el('div', 'panel-card result-card');
   card.appendChild(el('div', 'panel-title', 'Blocked-path simulation'));
 
-  card.appendChild(el('div', 'result-sub', `${blockedCount} walkway${blockedCount === 1 ? '' : 's'} blocked (shown with red ✕).`));
+  const chipRow = el('div', 'result-status');
+  const chip = el('span', `status-chip ${after.status === 'ok' ? 'status-warn' : 'status-no'}`, after.status === 'ok' ? `Rerouted around ${blockedCount} block${blockedCount === 1 ? '' : 's'}` : '✗ Unreachable now');
+  chipRow.appendChild(chip);
+  card.appendChild(chipRow);
 
   if (after.status === 'ok') {
+    const grid = el('div', 'stat-grid stat-grid-2');
     if (before.status === 'ok') {
-      card.appendChild(statRow('Before (clear path)', fmtMeters(before.totalDistance)));
-      card.appendChild(statRow('After (re-routed)', fmtMeters(after.totalDistance)));
+      statCell(grid, 'Before (clear)', fmtMeters(before.totalDistance));
+      statCell(grid, 'After (rerouted)', fmtMeters(after.totalDistance));
       const delta = after.totalDistance - before.totalDistance;
-      card.appendChild(
-        statRow(
-          'Change',
-          `${delta >= 0 ? '+' : '−'}${fmtMeters(Math.abs(delta))}`,
-          `+${fmtTime(Math.abs(estimateWalkTime(after.totalDistance).estimatedSeconds - estimateWalkTime(before.totalDistance).estimatedSeconds))} est. time`,
-        ),
-      );
+      statCell(grid, 'Change', `${delta >= 0 ? '+' : '−'}${fmtMeters(Math.abs(delta))}`);
+      statCell(grid, 'Extra walk time', `+${fmtTime(Math.abs(estimateWalkTime(after.totalDistance).estimatedSeconds - estimateWalkTime(before.totalDistance).estimatedSeconds))}`);
     } else {
-      card.appendChild(el('div', 'result-sub', 'Before: unreachable · After: reachable (a block was removed).'));
-      card.appendChild(statRow('After (re-routed)', fmtMeters(after.totalDistance)));
+      statCell(grid, 'Before', 'unreachable');
+      statCell(grid, 'After (rerouted)', fmtMeters(after.totalDistance));
     }
+    card.appendChild(grid);
   } else {
-    card.appendChild(
-      el('div', 'result-bad', `✗ Destination became UNREACHABLE with these walkways blocked.`),
-    );
+    card.appendChild(el('div', 'result-bad', `✗ Destination became UNREACHABLE with ${blockedCount} walkway${blockedCount === 1 ? '' : 's'} blocked.`));
     if (before.status === 'ok') {
-      card.appendChild(statRow('Before (clear path)', fmtMeters(before.totalDistance)));
+      const grid = el('div', 'stat-grid');
+      statCell(grid, 'Before (clear)', fmtMeters(before.totalDistance));
+      card.appendChild(grid);
     }
   }
 
   card.appendChild(
-    el('div', 'cmp-note', 'The original graph is never modified — routing runs on a cloned view, so unblocking restores the exact prior state.'),
+    el('div', 'cmp-note', 'The original graph is never modified — routing runs on a cloned view with the blocked edges removed, so unblocking restores the exact prior state.'),
   );
   container.appendChild(card);
 }

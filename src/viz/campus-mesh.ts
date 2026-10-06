@@ -17,11 +17,13 @@ import type { CampusLayout } from './layout';
 
 // ── palette (original, restrained) ─────────────────────────────────────────
 const COLORS = {
-  groundTop: 0x27392d,
+  groundTop: 0x283b2e,
   groundSide: 0x1d2b22,
-  platform: 0x141d18,
-  water: 0x3f7fbf,
-  walkway: 0x6d7c8e,
+  platform: 0x131c17,
+  water: 0x2e5c86, // large but subdued
+  walkwayRing: 0x93a5bd, // World Showcase ring — strongest walkway class
+  walkway: 0x71829a, // regular paths
+  walkwayIndoor: 0x5a6a80, // indoor / narrow
   bridge: 0x8b98a8,
   railing: 0xbcc7d4,
   node: 0x9fb0c4,
@@ -37,6 +39,20 @@ const COLORS = {
   glass: 0x7fae8f,
 };
 
+/** Base colors per walkway class (stored on each edge mesh so the route
+ *  layer can restore exact colors when dimming/emphasizing). */
+function walkwayBaseColor(widthClass: number): number {
+  if (widthClass === 1) return COLORS.walkwayRing;
+  if (widthClass === -1) return COLORS.walkwayIndoor;
+  return COLORS.walkway;
+}
+
+function walkwayRadius(widthClass: number): number {
+  if (widthClass === 1) return 4.2;
+  if (widthClass === -1) return 1.8;
+  return 2.2;
+}
+
 export interface CampusMeshes {
   group: THREE.Group;
   /** One sphere per vertex (the graph node). */
@@ -47,6 +63,9 @@ export interface CampusMeshes {
   edgeByPair: Map<string, THREE.Mesh>;
   /** Label sprite per vertex. */
   labels: Map<string, THREE.Sprite>;
+  /** Bounds of the "useful" model (buildings, walkways, nodes) — excludes
+   *  the plinth and label sprites; drives camera framing. */
+  contentBox: THREE.Box3;
   worldPos: (id: string) => THREE.Vector3;
   setLabelsVisible(visible: boolean): void;
   labelsVisible(): boolean;
@@ -128,28 +147,92 @@ function genericPavilion(roofColor: number): THREE.Group {
 function buildingFor(id: string, type: string): THREE.Group | null {
   const g = new THREE.Group();
   switch (id) {
-    case 'pav-mexico': return genericPavilion(COLORS.sand);
-    case 'pav-norway': return genericPavilion(COLORS.slate);
-    case 'pav-china': return genericPavilion(COLORS.deepRed);
-    case 'pav-germany': return genericPavilion(COLORS.copper);
-    case 'pav-italy': return genericPavilion(COLORS.sand);
+    case 'pav-mexico':
+      return genericPavilion(COLORS.sand);
+    case 'pav-norway': {
+      // white hall + steep slate gable (stave-church silhouette)
+      g.add(box(26, 13, 20, std(COLORS.white), 0, 6.5, 0));
+      const roof = gableRoof(30, 24, 13, std(COLORS.slate));
+      roof.position.y = 13;
+      g.add(roof);
+      return g;
+    }
+    case 'pav-china': {
+      // pagoda: box + two stacked flared 8-gon roofs, deep red
+      g.add(box(22, 10, 22, std(COLORS.wallDark), 0, 5, 0));
+      const r1 = new THREE.Mesh(new THREE.ConeGeometry(24, 8, 8, 1), std(COLORS.deepRed));
+      r1.position.y = 14;
+      g.add(r1);
+      const r2 = new THREE.Mesh(new THREE.ConeGeometry(16, 7, 8, 1), std(COLORS.deepRed));
+      r2.position.y = 22;
+      g.add(r2);
+      return g;
+    }
+    case 'pav-germany': {
+      // hall + tall copper pyramid
+      g.add(box(26, 12, 20, std(COLORS.wall), 0, 6, 0));
+      g.add(pyramid(20, 14, std(COLORS.copper), 12));
+      return g;
+    }
+    case 'pav-italy': {
+      // hall + terracotta dome
+      g.add(box(26, 12, 20, std(COLORS.wall), 0, 6, 0));
+      g.add(dome(15, std(COLORS.terracotta, { flat: false, roughness: 0.7 }), 12));
+      return g;
+    }
     case 'pav-america': {
+      // temple: portico columns + pediment
       const h = genericPavilion(0x8c9bab);
-      // wider pediment + a row of columns
-      const ped = new THREE.Mesh(new THREE.ConeGeometry(20, 7, 4, 1), std(0x8c9bab));
+      const ped = new THREE.Mesh(new THREE.ConeGeometry(21, 8, 4, 1), std(0x8c9bab));
       ped.rotation.y = Math.PI / 4;
-      ped.position.set(0, 14.5, 12);
+      ped.position.set(0, 15, 12);
       h.add(ped);
       for (let i = -1.5; i <= 1.5; i += 1) {
-        h.add(cylinder(1.2, 1.2, 10, 8, std(COLORS.white), i * 8, 5, 14));
+        h.add(cylinder(1.4, 1.4, 11, 8, std(COLORS.white), i * 8, 5.5, 15));
       }
       return h;
     }
-    case 'pav-japan': return genericPavilion(0x7a5a3c);
-    case 'pav-morocco': return genericPavilion(COLORS.copper);
-    case 'pav-france': return genericPavilion(0x7d8a99);
-    case 'pav-uk': return genericPavilion(COLORS.terracotta);
-    case 'pav-canada': return genericPavilion(COLORS.deepRed);
+    case 'pav-japan': {
+      // two-tier curved-look roof (wide 12-gon cones), dark timber
+      g.add(box(24, 10, 24, std(COLORS.wallDark), 0, 5, 0));
+      const r1 = new THREE.Mesh(new THREE.ConeGeometry(26, 7, 12, 1), std(0x7a5a3c));
+      r1.position.y = 13.5;
+      g.add(r1);
+      const r2 = new THREE.Mesh(new THREE.ConeGeometry(17, 6.5, 12, 1), std(0x7a5a3c));
+      r2.position.y = 20.5;
+      g.add(r2);
+      return g;
+    }
+    case 'pav-morocco': {
+      // rampart + corner minaret with small dome
+      g.add(box(26, 12, 20, std(COLORS.wallDark), 0, 6, 0));
+      g.add(box(28, 2, 22, std(0xb98a5a), 0, 13, 0));
+      g.add(cylinder(3.2, 3.6, 24, 8, std(COLORS.copper), 17, 12, 0));
+      g.add(dome(3.6, std(0x6d9e6d, { flat: false }), 24));
+      return g;
+    }
+    case 'pav-france': {
+      // slate-roofed hall (the Eiffel Tower sits at its own landmark node)
+      g.add(box(26, 12, 20, std(COLORS.wall), 0, 6, 0));
+      g.add(pyramid(19, 10, std(0x7d8a99), 12));
+      return g;
+    }
+    case 'pav-uk': {
+      // hall + corner clock tower
+      g.add(box(26, 12, 20, std(COLORS.wallDark), 0, 6, 0));
+      g.add(box(28, 1.6, 22, std(0x9a8f7d), 0, 12.8, 0));
+      g.add(cylinder(5, 5.4, 18, 8, std(0xb9ab8f), 17, 2, 0));
+      g.add(pyramid(6, 7, std(COLORS.slate), 16));
+      return g;
+    }
+    case 'pav-canada': {
+      // timber hall + steep red gable
+      g.add(box(26, 12, 20, std(COLORS.wall), 0, 6, 0));
+      const roof = gableRoof(30, 24, 12, std(COLORS.deepRed));
+      roof.position.y = 12;
+      g.add(roof);
+      return g;
+    }
 
     case 'outpost': {
       g.add(box(15, 9, 15, std(COLORS.wallDark), 0, 4.5, 0));
@@ -180,9 +263,9 @@ function buildingFor(id: string, type: string): THREE.Group | null {
     }
 
     case 'land-spaceship': {
-      const geo = new THREE.IcosahedronGeometry(38, 1);
-      g.add(mesh(geo, std(COLORS.white, { roughness: 0.7 }), 0, 38, 0));
-      g.add(cylinder(44, 46, 3, 32, std(0xcfd6df), 0, 1.5, 0));
+      const geo = new THREE.IcosahedronGeometry(44, 1);
+      g.add(mesh(geo, std(COLORS.white, { roughness: 0.7 }), 0, 44, 0));
+      g.add(cylinder(50, 52, 3, 32, std(0xcfd6df), 0, 1.5, 0));
       return g;
     }
     case 'attr-journey': {
@@ -194,12 +277,12 @@ function buildingFor(id: string, type: string): THREE.Group | null {
       return g;
     }
     case 'attr-soarin': {
-      g.add(dome(26, std(COLORS.sand, { flat: false }), 0));
-      g.add(cylinder(27, 28, 3, 28, std(0xcfc8ba), 0, 1.5, 0));
+      g.add(dome(30, std(COLORS.sand, { flat: false }), 0));
+      g.add(cylinder(31, 32, 3, 28, std(0xcfc8ba), 0, 1.5, 0));
       return g;
     }
     case 'attr-testtrack': {
-      const torus = new THREE.Mesh(new THREE.TorusGeometry(26, 6.5, 10, 36), std(0xb7c0cc, { metalness: 0.3, roughness: 0.6 }));
+      const torus = new THREE.Mesh(new THREE.TorusGeometry(29, 7, 10, 36), std(0xb7c0cc, { metalness: 0.3, roughness: 0.6 }));
       torus.rotation.x = Math.PI / 2;
       torus.position.y = 7;
       g.add(torus);
@@ -207,25 +290,25 @@ function buildingFor(id: string, type: string): THREE.Group | null {
       return g;
     }
     case 'attr-rewind': {
-      g.add(cylinder(29, 31, 8, 28, std(0x8fa0b0, { metalness: 0.65, roughness: 0.35 }), 0, 4, 0));
-      g.add(mesh(new THREE.SphereGeometry(11, 20, 12), std(0xdde5ee, { metalness: 0.5, roughness: 0.4, flat: false }), 0, 17, 0));
+      g.add(cylinder(33, 35, 8, 28, std(0x8fa0b0, { metalness: 0.65, roughness: 0.35 }), 0, 4, 0));
+      g.add(mesh(new THREE.SphereGeometry(13, 20, 12), std(0xdde5ee, { metalness: 0.5, roughness: 0.4, flat: false }), 0, 19, 0));
       return g;
     }
     case 'attr-missionspace': {
-      g.add(dome(20, std(COLORS.white), 0));
+      g.add(dome(24, std(COLORS.white), 0));
       const rocket = new THREE.Group();
-      const body = new THREE.Mesh(new THREE.ConeGeometry(7, 24, 12), std(0xd64545));
-      body.position.y = 12;
+      const body = new THREE.Mesh(new THREE.ConeGeometry(8.5, 30, 12), std(0xd64545));
+      body.position.y = 15;
       rocket.add(body);
-      rocket.add(mesh(new THREE.SphereGeometry(7, 12, 8, 0, Math.PI * 2, Math.PI / 2), std(COLORS.white), 0, 0, 0));
+      rocket.add(mesh(new THREE.SphereGeometry(8.5, 12, 8, 0, Math.PI * 2, Math.PI / 2), std(COLORS.white), 0, 0, 0));
       rocket.rotation.z = Math.PI / 4;
-      rocket.position.set(6, 20, 0);
+      rocket.position.set(7, 24, 0);
       g.add(rocket);
       return g;
     }
     case 'area-land': {
-      const geo = new THREE.IcosahedronGeometry(40, 1);
-      g.add(mesh(geo, std(COLORS.glass, { opacity: 0.85 }), 0, 22, 0));
+      const geo = new THREE.IcosahedronGeometry(47, 1);
+      g.add(mesh(geo, std(COLORS.glass, { opacity: 0.85 }), 0, 26, 0));
       return g;
     }
     case 'attr-seas': {
@@ -255,7 +338,7 @@ function buildingFor(id: string, type: string): THREE.Group | null {
     }
 
     case 'land-pyramid': {
-      g.add(pyramid(30, 34, std(COLORS.sand, { roughness: 0.8 }), 0));
+      g.add(pyramid(34, 40, std(COLORS.sand, { roughness: 0.8 }), 0));
       return g;
     }
     case 'land-stavechurch': {
@@ -353,7 +436,7 @@ function makeLabel(text: string, major: boolean): THREE.Sprite {
   texture.anisotropy = 4;
   const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true });
   const sprite = new THREE.Sprite(material);
-  const worldH = major ? 21 : 16.5;
+  const worldH = major ? 19 : 15;
   const worldW = worldH * (w / h);
   sprite.scale.set(worldW, worldH, 1);
   sprite.userData.baseScale = new THREE.Vector2(worldW, worldH);
@@ -365,8 +448,8 @@ function makeLabel(text: string, major: boolean): THREE.Sprite {
 
 /** Vertex ids whose graph node floats above a tall building. */
 const NODE_HEIGHT: Record<string, number> = {
-  'land-eiffel': 104,
-  'land-spaceship': 90,
+  'land-eiffel': 124,
+  'land-spaceship': 98,
 };
 
 export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
@@ -424,6 +507,7 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
   plinthGeo.rotateX(-Math.PI / 2);
   const plinthMesh = new THREE.Mesh(plinthGeo, std(COLORS.platform, { flat: false }));
   plinthMesh.position.y = -16.4;
+  plinthMesh.userData.noBounds = true; // excluded from camera framing
   group.add(plinthMesh);
 
   // Lagoon water.
@@ -436,10 +520,9 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     group.add(water);
   }
 
-  // Walkways (one mesh per dataset edge).
+  // Walkways (one mesh per dataset edge), colour + width by class.
   const edges = new Map<string, THREE.Mesh>();
   const edgeByPair = new Map<string, THREE.Mesh>();
-  const walkwayMat = std(COLORS.walkway, { flat: false });
   for (const e of layout.edges) {
     const a = toWorld(e.fromX, e.fromY, 0.9);
     const b = toWorld(e.toX, e.toY, 0.9);
@@ -448,11 +531,11 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     let m: THREE.Mesh;
     if (e.isBridge) {
       const deck = new THREE.Group();
-      const w = 26;
+      const w = 24;
       const deckMesh = box(w, 3.5, len + 18, std(COLORS.bridge, { flat: false }));
       deck.add(deckMesh);
-      deck.add(box(1.6, 3, len + 18, std(COLORS.railing), -w / 2, 4.2, 0));
-      deck.add(box(1.6, 3, len + 18, std(COLORS.railing), w / 2, 4.2, 0));
+      deck.add(box(1.4, 3, len + 18, std(COLORS.railing), -w / 2, 4.2, 0));
+      deck.add(box(1.4, 3, len + 18, std(COLORS.railing), w / 2, 4.2, 0));
       deck.position.copy(a);
       deck.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir.clone().normalize());
       deck.position.y = 2.2;
@@ -463,9 +546,9 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
       group.add(deck);
       m = clickable;
     } else {
-      const radius = e.widthClass === 1 ? 5 : e.widthClass === -1 ? 2.4 : 3;
+      const radius = walkwayRadius(e.widthClass);
       const geo = new THREE.CylinderGeometry(radius, radius, len, 10, 1, true);
-      m = new THREE.Mesh(geo, walkwayMat);
+      m = new THREE.Mesh(geo, std(walkwayBaseColor(e.widthClass), { flat: false }));
       m.position.copy(a).add(b).multiplyScalar(0.5);
       m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
       m.receiveShadow = true;
@@ -476,6 +559,7 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     m.userData.edgeId = e.id;
     m.userData.fromId = e.fromId;
     m.userData.toId = e.toId;
+    m.userData.baseColor = e.isBridge ? COLORS.bridge : walkwayBaseColor(e.widthClass);
   }
 
   // Buildings + graph nodes + labels.
@@ -501,9 +585,18 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     group.add(node);
 
     const label = makeLabel(v.name, v.major);
-    label.position.copy(p).add(new THREE.Vector3(0, nodeY + 15, 0));
+    label.position.copy(p).add(new THREE.Vector3(0, nodeY + 14, 0));
+    label.userData.noBounds = true; // excluded from camera framing
     labels.set(v.id, label);
     group.add(label);
+  }
+
+  // Bounds of the useful model (everything except plinth + labels).
+  group.updateMatrixWorld(true);
+  const contentBox = new THREE.Box3();
+  for (const child of group.children) {
+    if (child.userData.noBounds === true) continue;
+    contentBox.expandByObject(child);
   }
 
   const worldPos = (id: string): THREE.Vector3 => {
@@ -523,6 +616,7 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     edges,
     edgeByPair,
     labels,
+    contentBox,
     worldPos,
     setLabelsVisible,
     labelsVisible: () => labelVisibility,

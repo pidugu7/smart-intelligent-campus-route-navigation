@@ -29,6 +29,53 @@ export interface ReplayCallbacks {
   onProgress?: (index: number, total: number) => void;
 }
 
+export interface TraceEventDescription {
+  /** Uppercase event kind, exactly matching the TraceEvent schema. */
+  kind: 'START' | 'VISIT' | 'RELAX' | 'FINALIZE' | 'ABORT';
+  /** Primary human-readable line (node/edge names). */
+  detail: string;
+  /** Optional secondary line (distance, improvement, cost). */
+  sub?: string;
+}
+
+/**
+ * Human-readable description of one engine TraceEvent, using ONLY the
+ * existing event schema (start / visit / relax / finalize / abort).
+ * `unit` distinguishes metres (Dijkstra/A*) from hops (BFS).
+ */
+export function describeTraceEvent(
+  ev: TraceEvent,
+  nameOf: (id: string) => string,
+  unit: string = 'm',
+): TraceEventDescription {
+  switch (ev.type) {
+    case 'start':
+      return { kind: 'START', detail: `Source: ${nameOf(ev.sourceId)}` };
+    case 'visit':
+      return {
+        kind: 'VISIT',
+        detail: `Node: ${nameOf(ev.vertexId)}`,
+        sub: `best distance ${Math.round(ev.bestDistance)} ${unit}`,
+      };
+    case 'relax':
+      return {
+        kind: 'RELAX',
+        detail: `Edge: ${nameOf(ev.fromId)} → ${nameOf(ev.toId)}`,
+        sub: ev.improved
+          ? `improved to ${Math.round(ev.newDistance)} ${unit}`
+          : `no improvement (best stays ${Math.round(ev.oldDistance ?? ev.newDistance)} ${unit})`,
+      };
+    case 'finalize':
+      return {
+        kind: 'FINALIZE',
+        detail: `Destination: ${nameOf(ev.targetId)}`,
+        sub: `optimal cost ${Math.round(ev.totalDistance)} ${unit}`,
+      };
+    case 'abort':
+      return { kind: 'ABORT', detail: 'Destination unreachable (search exhausted)' };
+  }
+}
+
 export class TraceReplayer {
   private readonly trace: readonly TraceEvent[];
   private readonly cb: ReplayCallbacks;
