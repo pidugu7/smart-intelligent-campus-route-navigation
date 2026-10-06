@@ -34,7 +34,10 @@ export type RouteResult =
       path: string[];
       /** Same ordering as `path`, resolved to full vertex objects. */
       vertices: Vertex[];
-      /** Optimal travelling cost in metres. */
+      /**
+       * Optimal cost in the selected algorithm's cost model:
+       * metres for 'dijkstra' and 'astar'; fewest HOPS for 'bfs'.
+       */
       totalDistance: number;
       trace: readonly TraceEvent[];
     })

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { aStar } from '../../src/engine/algorithms/a-star';
+import { bfs } from '../../src/engine/algorithms/bfs';
 import { dijkstra } from '../../src/engine/algorithms/dijkstra';
 import { TraceRecorder, type TraceEvent } from '../../src/engine/trace/step-trace';
-import { diamondGraph, disconnectedGraph } from '../fixtures/graphs';
+import { diamondGraph, disconnectedGraph, gridGraph, hopsVsDistanceGraph } from '../fixtures/graphs';
 
 const ALLOWED_TYPES: ReadonlySet<string> = new Set(['start', 'visit', 'relax', 'finalize', 'abort']);
 
@@ -69,5 +71,41 @@ describe('TraceEvent schema (runtime conformance of real runs)', () => {
     const types = run.trace.map((e: TraceEvent) => e.type);
     expect(types).not.toContain('finalize');
     expect(types).not.toContain('abort');
+  });
+});
+
+describe('TraceEvent schema conformance: A* and BFS', () => {
+  it('A* runs use the same event schema (g-value semantics)', () => {
+    const run = aStar(gridGraph(), 'v0-0', { targetId: 'v3-3' });
+    expect(run.trace[0]).toEqual({ type: 'start', sourceId: 'v0-0' });
+    for (const e of run.trace) {
+      expect(ALLOWED_TYPES.has(e.type)).toBe(true);
+      if (e.type === 'relax') {
+        expect(Number.isFinite(e.newDistance)).toBe(true);
+        expect(e.oldDistance === null || Number.isFinite(e.oldDistance)).toBe(true);
+      }
+    }
+    expect(run.trace[run.trace.length - 1]).toEqual({
+      type: 'finalize',
+      targetId: 'v3-3',
+      totalDistance: 60,
+    });
+  });
+
+  it('BFS runs use the same event schema (hop-count semantics)', () => {
+    const run = bfs(hopsVsDistanceGraph(), 'a', { targetId: 'b' });
+    expect(run.trace[0]).toEqual({ type: 'start', sourceId: 'a' });
+    const visits = run.trace.filter((e) => e.type === 'visit');
+    expect(visits.map((e) => (e.type === 'visit' ? e.bestDistance : NaN))).toEqual([0, 1]);
+    expect(run.trace[run.trace.length - 1]).toEqual({
+      type: 'finalize',
+      targetId: 'b',
+      totalDistance: 1, // one HOP, not metres
+    });
+  });
+
+  it('BFS unreachable runs end with the same abort event as Dijkstra', () => {
+    const run = bfs(disconnectedGraph(), 'a', { targetId: 'x' });
+    expect(run.trace[run.trace.length - 1]).toEqual({ type: 'abort', reason: 'unreachable' });
   });
 });

@@ -98,3 +98,75 @@ export function tieGraph(): WeightedGraph {
   g.addEdge({ from: 'c', to: 'd', weight: 1, kind: 'path' });
   return g;
 }
+
+/**
+ * SPATIAL grid (the Phase 2 default for A* tests).
+ *
+ * cols × rows intersections, `spacing` metres apart, orthogonal edges whose
+ * weight EXACTLY equals the geometric length (surface factor 1.0). The
+ * Euclidean heuristic is therefore admissible AND consistent here.
+ *
+ * Corner to corner: optimal cost = (cols + rows - 2) × spacing.
+ */
+export function gridGraph(cols = 4, rows = 4, spacing = 10): WeightedGraph {
+  const g = new WeightedGraph();
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      g.addVertex({
+        id: `v${r}-${c}`,
+        name: `grid ${r}-${c}`,
+        type: 'intersection',
+        x: c * spacing,
+        y: r * spacing,
+        z: 0,
+      });
+    }
+  }
+  for (let r = 0; r < rows; r += 1) {
+    for (let c = 0; c < cols; c += 1) {
+      if (c + 1 < cols) {
+        g.addEdge({ from: `v${r}-${c}`, to: `v${r}-${c + 1}`, weight: spacing, kind: 'path' });
+      }
+      if (r + 1 < rows) {
+        g.addEdge({ from: `v${r}-${c}`, to: `v${r + 1}-${c}`, weight: spacing, kind: 'path' });
+      }
+    }
+  }
+  return g;
+}
+
+/**
+ * SPATIAL "cheap wrong-way tail" graph — the A* showcase fixture.
+ *
+ *   Source s at (0,0). Target t at (50,0).
+ *   - East corridor: s —10— p1 —10— p2 —10— p3 —10— p4 —10— t  (optimal: 50 m)
+ *   - West tail: 30 nodes 1 m apart going the WRONG way, each edge 1 m
+ *     (factor 1.0, so the heuristic stays admissible). Cheap in cost (1 m
+ *     each) but far from the target in straight-line distance.
+ *
+ * Expected: Dijkstra (g-ordered) walks the entire cheap tail before reaching
+ * the target (36 expansions); A* (f-ordered) never pops a tail node, because
+ * every tail node has f = 50 + 2k >= 52 > f(target) = 50 (6 expansions).
+ * Same optimal cost (50) either way — the classic A* advantage.
+ */
+export function longCheapTailGraph(): WeightedGraph {
+  const g = new WeightedGraph();
+  g.addVertex({ id: 's', name: 'Source', type: 'gate', x: 0, y: 0, z: 0 });
+  g.addVertex({ id: 't', name: 'Target', type: 'poi', x: 50, y: 0, z: 0 });
+  for (let k = 1; k <= 4; k += 1) {
+    g.addVertex({ id: `p${k}`, name: `Corridor ${k}`, type: 'intersection', x: 10 * k, y: 0, z: 0 });
+  }
+  for (let k = 1; k <= 30; k += 1) {
+    g.addVertex({ id: `w${k}`, name: `West tail ${k}`, type: 'intersection', x: -k, y: 0, z: 0 });
+  }
+  g.addEdge({ from: 's', to: 'p1', weight: 10, kind: 'path' });
+  for (let k = 1; k <= 3; k += 1) {
+    g.addEdge({ from: `p${k}`, to: `p${k + 1}`, weight: 10, kind: 'path' });
+  }
+  g.addEdge({ from: 'p4', to: 't', weight: 10, kind: 'path' });
+  g.addEdge({ from: 's', to: 'w1', weight: 1, kind: 'path' });
+  for (let k = 1; k <= 29; k += 1) {
+    g.addEdge({ from: `w${k}`, to: `w${k + 1}`, weight: 1, kind: 'path' });
+  }
+  return g;
+}

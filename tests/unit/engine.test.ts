@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { findRoute, type RouteResult } from '../../src/engine/engine';
-import { diamondGraph, disconnectedGraph, tieGraph } from '../fixtures/graphs';
+import {
+  diamondGraph,
+  disconnectedGraph,
+  gridGraph,
+  hopsVsDistanceGraph,
+  tieGraph,
+} from '../fixtures/graphs';
 
 describe('findRoute (public engine API)', () => {
   it('returns a full "ok" result with ordered path, cost, stats and trace', () => {
@@ -58,5 +64,49 @@ describe('findRoute (public engine API)', () => {
     const result = findRoute(tieGraph(), 'a', 'd');
     if (result.status !== 'ok') throw new Error('unreachable test branch');
     expect(result.path).toEqual(result.vertices.map((v) => v.id));
+  });
+});
+
+describe('findRoute: A* and BFS through the public API', () => {
+  it('A* routes with the same optimal cost as Dijkstra (grid corner to corner)', () => {
+    const g = gridGraph();
+    const dj = findRoute(g, 'v0-0', 'v3-3', 'dijkstra');
+    const as = findRoute(g, 'v0-0', 'v3-3', 'astar');
+    expect(dj.status).toBe('ok');
+    expect(as.status).toBe('ok');
+    if (dj.status !== 'ok' || as.status !== 'ok') throw new Error('unreachable test branch');
+    expect(as.totalDistance).toBe(dj.totalDistance);
+    expect(as.totalDistance).toBe(60);
+    // the A* path must be a real walk: every consecutive pair is a graph edge
+    for (let i = 0; i + 1 < as.path.length; i += 1) {
+      const connected = g.neighborsOf(as.path[i]!).some((e) => e.to === as.path[i + 1]);
+      expect(connected).toBe(true);
+    }
+  });
+
+  it('A* handles start === destination with zero cost', () => {
+    const result = findRoute(gridGraph(), 'v0-0', 'v0-0', 'astar');
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('unreachable test branch');
+    expect(result.totalDistance).toBe(0);
+    expect(result.path).toEqual(['v0-0']);
+  });
+
+  it('BFS totalDistance is HOPS (fewest-stop routing mode)', () => {
+    const result: RouteResult = findRoute(hopsVsDistanceGraph(), 'a', 'b', 'bfs');
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('unreachable test branch');
+    expect(result.totalDistance).toBe(1); // 1 hop, even though the edge is 10 m long
+    expect(result.path).toEqual(['a', 'b']);
+    // Dijkstra on the same query returns 2 metres via c — same API, different objective
+    const dj = findRoute(hopsVsDistanceGraph(), 'a', 'b', 'dijkstra');
+    if (dj.status !== 'ok') throw new Error('unreachable test branch');
+    expect(dj.totalDistance).toBe(2);
+    expect(dj.path).toEqual(['a', 'c', 'b']);
+  });
+
+  it('BFS reports unreachable destinations like every other algorithm', () => {
+    const result = findRoute(disconnectedGraph(), 'a', 'x', 'bfs');
+    expect(result.status).toBe('unreachable');
   });
 });

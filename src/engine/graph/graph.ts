@@ -29,6 +29,14 @@ function canonicalEdgeKey(a: string, b: string): string {
   return a < b ? `${a}${SEP}${b}` : `${b}${SEP}${a}`;
 }
 
+/**
+ * The canonical (from < to) orientation of an undirected edge. Used by the
+ * simulation/routing layers to identify and report edges direction-independently.
+ */
+export function canonicalEdgeIds(from: string, to: string): { from: string; to: string } {
+  return from < to ? { from, to } : { from: to, to: from };
+}
+
 /** Empty list returned for unknown ids (shared, never mutated). */
 const EMPTY_NEIGHBORS: readonly AdjacencyEntry[] = [];
 
@@ -178,6 +186,60 @@ export class WeightedGraph {
       }
     }
     return out;
+  }
+
+  /**
+   * Remove an undirected edge from THIS graph (destructive to this instance).
+   * For non-destructive "blocking", call clone() first and remove on the
+   * clone — see simulation/block.ts. O(deg(from) + deg(to)) time.
+   * @throws GraphError on self-loops, unknown vertices, or a missing edge.
+   */
+  removeEdge(from: string, to: string): void {
+    if (from === to) {
+      throw new GraphError(`self-loop on "${from}" is not supported`);
+    }
+    if (!this.vertices.has(from)) {
+      throw new GraphError(`edge references unknown vertex "${from}"`);
+    }
+    if (!this.vertices.has(to)) {
+      throw new GraphError(`edge references unknown vertex "${to}"`);
+    }
+    const key = canonicalEdgeKey(from, to);
+    if (!this.edgeKeys.has(key)) {
+      throw new GraphError(`edge "${from}"<->"${to}" does not exist in the graph`);
+    }
+    this.edgeKeys.delete(key);
+    this.stripDirection(from, to);
+    this.stripDirection(to, from);
+  }
+
+  /**
+   * A structural copy: same vertices, same edges. O(V + E) time and space.
+   * Vertex objects are shared (they are treated as immutable everywhere);
+   * the graph structure itself is fully independent, so the clone can be
+   * mutated (removeEdge, ...) without affecting the original.
+   *
+   * Note: the clone's internal adjacency order can differ from the original
+   * (edges are re-added in canonical scan order). This never affects costs,
+   * optimality, or results — only the ordering of trace events on the clone.
+   */
+  clone(): WeightedGraph {
+    const copy = new WeightedGraph();
+    for (const vertex of this.vertices.values()) {
+      copy.addVertex(vertex);
+    }
+    for (const edge of this.edges()) {
+      copy.addEdge(edge);
+    }
+    return copy;
+  }
+
+  private stripDirection(from: string, to: string): void {
+    const list = this.adjacency.get(from)!;
+    const index = list.findIndex((entry) => entry.to === to);
+    if (index !== -1) {
+      list.splice(index, 1);
+    }
   }
 
   private pushEntry(
