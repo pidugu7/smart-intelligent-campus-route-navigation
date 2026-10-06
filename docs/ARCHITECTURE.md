@@ -3,9 +3,13 @@
 How the Smart Intelligent Campus Route Navigation System is structured,
 and why the layers are separated the way they are.
 
-> The historical [`architecture.md`](architecture.md) is a Phase-3
-> snapshot and is kept for reference; **this file describes the current
-> architecture.**
+> **This file is the single canonical architecture document.**
+>
+> *History:* the architecture grew phase by phase — Phases 1–2 built the
+> pure-TypeScript engine, Phase 3 added the data-driven dataset layer
+> (loader + audit report), Phases 4–5 added the Three.js visualization,
+> UI and the full test setup. Earlier point-in-time drafts have been
+> merged into this document.
 
 ## The core idea: one pipeline, one direction
 
@@ -80,10 +84,13 @@ src/
 │   ├── schema.ts            #    VenueDataset: vertices (id, label, kind,
 │   │                        #    x/y/z in metres), edges (from, to,
 │   │                        #    weight, kind, confidence)
-│   ├── loader.ts            #    loadDataset: validate schema → build
-│   │                        #    WeightedGraph → audit report
-│   │                        #    (DFS connectedComponents, orphanedVertices,
-│   │                        #    hasCycle)
+│   ├── loader.ts            #    loadDataset: validate schema →
+│   │                        #    LoadedDataset { dataset, graph,
+│   │                        #    vertices/edges Maps (full schema fields),
+│   │                        #    report: DatasetReport (datasetName,
+│   │                        #    vertexCount, edgeCount,
+│   │                        #    connectedComponents, orphanedVertices,
+│   │                        #    hasCycle, warnings) }
 │   └── datasets/epcot/      #    37 vertices / 43 edges + provenance.md
 │
 ├── viz/                     # ── Three.js visualization ────────────────────
