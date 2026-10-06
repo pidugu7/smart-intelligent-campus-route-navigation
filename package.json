@@ -1,0 +1,21 @@
+{
+  "name": "smart-intelligent-campus-route-navigation",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DSA-based route navigation engine (Dijkstra, hand-rolled binary min-heap, execution tracing, path reconstruction) with a data-driven design for real-world maps; 3D visualization arrives in a later phase.",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "vite",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.3",
+    "vitest": "^5.0.3"
+  }
+}
