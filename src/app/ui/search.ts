@@ -20,6 +20,8 @@ export interface SearchSelect {
 
 const MAX_RESULTS = 14;
 
+let listIdCounter = 0;
+
 export function createSearchSelect(
   items: readonly SearchItem[],
   placeholder: string,
@@ -39,6 +41,15 @@ export function createSearchSelect(
   `;
   const input = el.querySelector<HTMLInputElement>('.search-input')!;
   const list = el.querySelector<HTMLElement>('.search-list')!;
+  // Accessible name + combobox semantics (placeholder alone is not reliable).
+  listIdCounter += 1;
+  const listId = `search-list-${listIdCounter}`;
+  input.setAttribute('aria-label', placeholder);
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-expanded', 'false');
+  input.setAttribute('aria-controls', listId);
+  list.id = listId;
+  list.setAttribute('aria-label', placeholder);
   let activeIndex = -1;
 
   function renderResults(query: string): SearchItem[] {
@@ -71,20 +82,31 @@ export function createSearchSelect(
   }
 
   function openList(results: SearchItem[], query: string): void {
-    list.innerHTML = results
-      .map(
-        (r, i) => `<li role="option" data-id="${escapeHtml(r.id)}" class="${i === activeIndex ? 'active' : ''} ${r.id === selected ? 'selected' : ''}">
+    if (results.length === 0) {
+      // Graceful empty state for a query that matches no location.
+      list.innerHTML = `<li class="search-empty" aria-disabled="true"><span class="search-label">No locations match “${escapeHtml(query.trim())}”</span></li>`;
+    } else {
+      list.innerHTML = results
+        .map(
+          (r, i) => `<li role="option" id="${listId}-opt-${i}" data-id="${escapeHtml(r.id)}" aria-selected="${r.id === selected}" class="${i === activeIndex ? 'active' : ''} ${r.id === selected ? 'selected' : ''}">
           <span class="search-label">${highlight(r.label, query)}</span>
           ${r.hint !== undefined ? `<span class="search-hint">${escapeHtml(r.hint)}</span>` : ''}
         </li>`,
-      )
-      .join('');
+        )
+        .join('');
+    }
     list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    input.setAttribute('aria-activedescendant',
+      activeIndex >= 0 ? `${listId}-opt-${activeIndex}` : '',
+    );
   }
 
   function closeList(): void {
     list.hidden = true;
     activeIndex = -1;
+    input.setAttribute('aria-expanded', 'false');
+    input.removeAttribute('aria-activedescendant');
   }
 
   function pick(id: string): void {

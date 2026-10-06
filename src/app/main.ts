@@ -523,6 +523,22 @@ function main(): void {
     }
   });
 
+  // Demo: loads the predefined showcase query (Germany → Morocco, Dijkstra)
+  // by setting the UI inputs only — the real algorithm then runs normally.
+  ui.btnDemo.addEventListener('click', () => {
+    state.from = 'pav-germany';
+    state.to = 'pav-morocco';
+    state.algo = 'dijkstra';
+    ui.fromSelect.set('pav-germany');
+    ui.toSelect.set('pav-morocco');
+    ui.algorithm.value = 'dijkstra';
+    updateAlgoNotes();
+    routeLayer.setStart('pav-germany');
+    routeLayer.setTarget('pav-morocco');
+    labelsDirty = true;
+    doFindRoute();
+  });
+
   // ── wire buttons ──────────────────────────────────────────────────────────
   ui.btnFindRoute.addEventListener('click', doFindRoute);
   ui.btnCompare.addEventListener('click', doCompare);

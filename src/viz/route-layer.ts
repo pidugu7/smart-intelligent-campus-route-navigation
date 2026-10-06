@@ -100,12 +100,18 @@ export class RouteLayer {
   }
 
   private clearStart(): void {
-    if (this.startMarker !== null) this.group.remove(this.startMarker);
+    if (this.startMarker !== null) {
+      disposeObject(this.startMarker);
+      this.group.remove(this.startMarker);
+    }
     this.startMarker = null;
   }
 
   private clearTarget(): void {
-    if (this.targetMarker !== null) this.group.remove(this.targetMarker);
+    if (this.targetMarker !== null) {
+      disposeObject(this.targetMarker);
+      this.group.remove(this.targetMarker);
+    }
     this.targetMarker = null;
   }
 
@@ -270,7 +276,10 @@ export class RouteLayer {
 
   setBlocked(edgeId: string, blocked: boolean): void {
     const existing = this.blockedMarkers.get(edgeId);
-    if (existing !== undefined) this.group.remove(existing);
+    if (existing !== undefined) {
+      disposeObject(existing);
+      this.group.remove(existing);
+    }
     if (!blocked) {
       this.blockedMarkers.delete(edgeId);
       const edge = this.meshes.edges.get(edgeId);
@@ -301,9 +310,15 @@ export class RouteLayer {
 
   clearRoutes(): void {
     for (const obj of [...this.group.children]) {
-      if (obj.name === 'route') this.group.remove(obj);
+      if (obj.name === 'route') {
+        disposeObject(obj);
+        this.group.remove(obj);
+      }
     }
-    for (const p of this.pulses) this.group.remove(p.cursor);
+    for (const p of this.pulses) {
+      disposeObject(p.cursor);
+      this.group.remove(p.cursor);
+    }
     this.pulses.length = 0;
     this.clearEmphasis();
   }
@@ -352,6 +367,26 @@ export class RouteLayer {
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Release GPU resources (geometry / materials / textures) of a scene object
+ * and its descendants. Routes, markers and blocked markers are created per
+ * interaction, so every removal must dispose — otherwise repeated
+ * FIND ROUTE clicks would accumulate unused GPU buffers.
+ */
+function disposeObject(obj: THREE.Object3D): void {
+  obj.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.geometry.dispose();
+      const mats = Array.isArray(child.material) ? child.material : [child.material];
+      for (const m of mats) {
+        const mat = m as THREE.MeshStandardMaterial;
+        if (mat.map !== null && mat.map !== undefined) mat.map.dispose();
+        mat.dispose();
+      }
+    }
+  });
+}
 
 function marker(color: number): THREE.Group {
   const g = new THREE.Group();

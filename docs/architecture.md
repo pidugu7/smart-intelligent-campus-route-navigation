@@ -1,5 +1,11 @@
 # Architecture
 
+> ⚠️ **Historical snapshot (Phase 3).** This document describes the
+> project as of Phase 3 and is kept for reference. The current
+> architecture — including the Three.js visualization layer, the UI,
+> and the full test setup — is documented in
+> **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
 > Phase 3 snapshot. The project stays a static site (no backend): a **pure
 > TypeScript graph engine** + a **data-driven dataset layer** now, a Three.js
 > visualization and UI in Phase 4.

@@ -19,6 +19,7 @@ export interface AppControls {
   btnSwap: HTMLButtonElement;
   algorithm: HTMLSelectElement;
   btnFindRoute: HTMLButtonElement;
+  btnDemo: HTMLButtonElement;
   btnCompare: HTMLButtonElement;
   btnAlternative: HTMLButtonElement;
   btnReset: HTMLButtonElement;
@@ -141,6 +142,7 @@ export function buildControls(
   const btnSwap = document.createElement('button');
   btnSwap.className = 'btn btn-ghost btn-swap';
   btnSwap.title = 'Swap start and destination';
+  btnSwap.setAttribute('aria-label', 'Swap start and destination');
   btnSwap.textContent = '⇅ swap';
   swapRow.appendChild(btnSwap);
   form.appendChild(swapRow);
@@ -163,6 +165,12 @@ export function buildControls(
   btnFindRoute.className = 'btn btn-primary btn-block';
   btnFindRoute.textContent = 'Find route';
   form.appendChild(btnFindRoute);
+
+  const btnDemo = document.createElement('button');
+  btnDemo.className = 'btn btn-ghost btn-block btn-demo';
+  btnDemo.title = 'Loads the predefined showcase query: Germany → Morocco with Dijkstra';
+  btnDemo.textContent = 'Demo: Germany → Morocco';
+  form.appendChild(btnDemo);
   formCard.body.appendChild(form);
   root.appendChild(formCard.card);
 
@@ -340,6 +348,7 @@ export function buildControls(
   const infoButton = document.createElement('button');
   infoButton.className = 'prov-info-btn';
   infoButton.title = 'Data provenance';
+  infoButton.setAttribute('aria-label', 'Data provenance');
   infoButton.textContent = 'ⓘ';
   badge.appendChild(infoButton);
   container.appendChild(badge);
@@ -373,6 +382,7 @@ export function buildControls(
     btnSwap,
     algorithm,
     btnFindRoute,
+    btnDemo,
     btnCompare,
     btnAlternative,
     btnReset,

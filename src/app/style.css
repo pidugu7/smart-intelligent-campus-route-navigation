@@ -250,6 +250,7 @@ body {
 .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
 .btn-row .btn { font-size: 12.5px; min-height: 36px; padding: 8px 10px; }
 .btn-swap { padding: 5px 10px; font-size: 12px; min-height: 30px; }
+.btn-demo { margin-top: 6px; font-size: 12.5px; color: var(--muted); }
 .btn-provenance { margin-top: 2px; font-size: 12.5px; color: var(--muted); }
 .btn-provenance:hover { color: var(--text); }
 
@@ -325,6 +326,8 @@ body {
   cursor: pointer;
 }
 .search-list li:hover { background: #17253f; }
+.search-list li.search-empty { cursor: default; color: var(--faint); font-style: italic; }
+.search-list li.search-empty:hover { background: transparent; }
 .search-list li.active { background: #1a2b48; }
 .search-list li.selected .search-label { color: var(--accent); }
 .search-list mark { background: transparent; color: var(--accent); font-weight: 600; }
