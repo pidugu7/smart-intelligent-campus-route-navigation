@@ -1,0 +1,104 @@
+{
+  "meta": {
+    "name": "Template Dataset (fictional example)",
+    "description": "Minimal fictional dataset showing the full schema structure. Copy this file, fill in real values, and read src/data/ADDING_A_DATASET.md before publishing a real-world dataset.",
+    "unit": "m",
+    "coordinateSystem": "local 2-D grid in metres: origin at the main gate; x = east, y = north, z = elevation (flat, z = 0)",
+    "origin": "main gate (0, 0, 0)",
+    "scaleMethod": "EXAMPLE: one documented distance between two landmarks (100 m) was used to fix the metre scale of the digitized layout",
+    "precision": "EXAMPLE: coordinates ±5 m; edge weights ±5%",
+    "referenceDate": "2026",
+    "fictional": true,
+    "sources": [
+      {
+        "label": "EXAMPLE: a published map or guide of the environment (reference only)",
+        "url": "https://example.com/map",
+        "usedFor": "identities, relative layout, one calibration distance"
+      }
+    ],
+    "assumptions": [
+      "EXAMPLE: the layout is treated as flat (z = 0)",
+      "EXAMPLE: edge weights are straight-line distances between endpoints (upper bound on the true path)",
+      "EXAMPLE: vertex 'loc-d' has confidence 'unavailable' and is deliberately disconnected — loading this template reports connectedComponents=2 and lists 'loc-d' as orphaned, demonstrating the loader's audit"
+    ],
+    "primaryRootId": "loc-a"
+  },
+  "vertices": [
+    {
+      "id": "loc-a",
+      "name": "Location A (main gate)",
+      "type": "gate",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "confidence": "verified",
+      "source": "EXAMPLE: position taken from the primary reference",
+      "note": "placeholder — replace with a real, documented location"
+    },
+    {
+      "id": "loc-b",
+      "name": "Location B (central plaza)",
+      "type": "plaza",
+      "x": 100,
+      "y": 0,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "EXAMPLE: digitized from the reference map at the documented scale",
+      "note": "placeholder — replace with a real, documented location"
+    },
+    {
+      "id": "loc-c",
+      "name": "Location C (north hall)",
+      "type": "hall",
+      "x": 100,
+      "y": 80,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "EXAMPLE: estimated relative position from the reference map",
+      "note": "placeholder — replace with a real, documented location"
+    },
+    {
+      "id": "loc-d",
+      "name": "Location D (unmapped room)",
+      "type": "room",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "confidence": "unavailable",
+      "source": "EXAMPLE: no reliable position available — the loader allows 'unavailable' vertices (with placeholder coordinates)",
+      "note": "deliberately disconnected: demonstrates an honest 'unavailable' value and the loader's orphan/warning audit"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-a-b",
+      "from": "loc-a",
+      "to": "loc-b",
+      "weight": 100,
+      "weightSource": "documented-distance",
+      "kind": "path",
+      "confidence": "verified",
+      "note": "EXAMPLE: quoted from a documented distance"
+    },
+    {
+      "id": "e-b-c",
+      "from": "loc-b",
+      "to": "loc-c",
+      "weight": 80,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "EXAMPLE: traced along the visible path on the reference map"
+    },
+    {
+      "id": "e-a-c",
+      "from": "loc-a",
+      "to": "loc-c",
+      "weight": 128,
+      "weightSource": "straight-line-approx",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "EXAMPLE: straight line between endpoints (ceil of √(100²+80²) = 128)"
+    }
+  ]
+}

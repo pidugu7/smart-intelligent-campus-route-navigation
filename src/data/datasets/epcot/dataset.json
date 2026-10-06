@@ -1,0 +1,848 @@
+{
+  "meta": {
+    "name": "EPCOT — Walt Disney World, Orlando, FL (World Showcase ring + front-of-park)",
+    "description": "Walkable navigation graph of Walt Disney World’s EPCOT: the World Showcase lagoon ring (11 pavilions + The Outpost), the World Showcase Bridge, the International Gateway, and the front-of-park hub (World Celebration, World Discovery, World Nature). Schematic model built for a DSA route-navigation demonstration — NOT survey data and NOT for real-world navigation.",
+    "unit": "m",
+    "coordinateSystem": "local 2-D grid in metres: origin at the centre of World Showcase Lagoon; x = east, y = north, z = elevation (flat park, z = 0 everywhere)",
+    "origin": "centre of World Showcase Lagoon (0, 0, 0)",
+    "scaleMethod": "the lagoon promenade perimeter is documented as approximately 1.2 miles (≈1931 m) → promenade circle radius ≈ 1931/(2π) ≈ 307–312 m (R = 312 m used); pavilion angular positions read from the official 2026 park map (regular-spaced approximation, ±5–10°); front-of-park distances estimated from map proportions. Cross-check: reconstructed 13-segment ring perimeter = 1952 m vs documented ≈1931 m (+1.1%).",
+    "precision": "coordinates ±20–50 m (ring ±30 m angular); edge weights ±10–20% (ring segments ≤ straight-line chord of the promenade arc); all values approximate, none verified",
+    "referenceDate": "2026 (official 2026 EPCOT park map as primary reference; pavilion set includes Canada, which replaced Spain in 2024)",
+    "fictional": false,
+    "sources": [
+      {
+        "label": "Official 2026 EPCOT park map (image; viewed as reference only, NOT embedded in this project)",
+        "url": "https://www.deeparrival.com/florida/walt-disney-world/epcot/park-map",
+        "usedFor": "pavilion identities, clockwise order, area placement (Discovery west / Nature east), bridge and International Gateway placement, front-of-park layout"
+      },
+      {
+        "label": "Official 2023 EPCOT park map (image; reference only, NOT embedded)",
+        "url": "https://www.disneyfoodblog.com/epcot-map/",
+        "usedFor": "corroboration of the same layout and of World Discovery / World Nature attraction rosters (incl. Mission: SPACE, Journey Into Imagination with Figment)"
+      },
+      {
+        "label": "Walt Disney World park guides (wdwnt.com, bepreparedvacations.com, pixievacations.com, deeparrival.com)",
+        "url": "https://www.wdwnt.com/epcot-map/",
+        "usedFor": "corroborating the 2026 map layout, area names, attraction rosters"
+      },
+      {
+        "label": "Public historical park references (undercovertourist.com, dadsguidetowdw.com, howtodisney.com, theoriginalepcot site)",
+        "usedFor": "documented 11-pavilion World Showcase ordering (clockwise from the bridge: Mexico, Norway, China, Germany, Italy, America, Japan, Morocco, France, United Kingdom, Canada), documented ≈1.2-mile lagoon perimeter, Canada-replaced-Spain (2024), The Outpost history"
+      }
+    ],
+    "assumptions": [
+      "The lagoon is modelled as a circle; the real lake is kidney-shaped (documented approximation).",
+      "Pavilions sit on the promenade circle at angles read from the map; the exact spacing is not a surveyed value.",
+      "The bridge is the only walkable connection between the front-of-park hub and the World Showcase ring; the International Gateway is a separate external entrance and is NOT connected to the front-of-park side in this graph.",
+      "Edge weights are straight-line distances (ceil), an upper bound on the true walk length; ring segment lengths are additionally constrained by the documented perimeter.",
+      "Edges marked straight-line-approx model plausible direct links that are not individually verified (shortcuts between two attractions, pavilion-internal hops).",
+      "Elevation is flat (z = 0); the park has minor grade changes that are not modelled.",
+      "Opening hours, queues, seasonal closures and construction are out of scope (static topology)."
+    ],
+    "primaryRootId": "gate-main"
+  },
+  "vertices": [
+    {
+      "id": "gate-main",
+      "name": "Main Entrance",
+      "type": "gate",
+      "x": -10,
+      "y": -730,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "gate-plaza",
+      "name": "Main Entrance Plaza",
+      "type": "plaza",
+      "x": -10,
+      "y": -680,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "area-celebration",
+      "name": "World Celebration",
+      "type": "area",
+      "x": -5,
+      "y": -560,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "land-spaceship",
+      "name": "Spaceship Earth",
+      "type": "landmark",
+      "x": -5,
+      "y": -600,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "attr-journey",
+      "name": "Journey of Water",
+      "type": "attraction",
+      "x": 0,
+      "y": -490,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "area-fountain",
+      "name": "Fountain Garden",
+      "type": "area",
+      "x": 0,
+      "y": -430,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "bridge-showcase",
+      "name": "World Showcase Bridge",
+      "type": "bridge",
+      "x": 0,
+      "y": -360,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "area-showcase",
+      "name": "World Showcase Promenade",
+      "type": "area",
+      "x": 0,
+      "y": -320,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "pav-mexico",
+      "name": "Mexico Pavilion",
+      "type": "pavilion",
+      "x": -156,
+      "y": -270,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "land-pyramid",
+      "name": "Mexico Pyramid",
+      "type": "landmark",
+      "x": -141,
+      "y": -245,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "attr-granfiesta",
+      "name": "Gran Fiesta Tour Starring the Three Caballeros",
+      "type": "attraction",
+      "x": -141,
+      "y": -225,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "pav-norway",
+      "name": "Norway Pavilion",
+      "type": "pavilion",
+      "x": -283,
+      "y": -132,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "land-stavechurch",
+      "name": "Stave Church",
+      "type": "landmark",
+      "x": -260,
+      "y": -121,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "attr-frozen",
+      "name": "Frozen Ever After",
+      "type": "attraction",
+      "x": -250,
+      "y": -115,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "pav-china",
+      "name": "China Pavilion",
+      "type": "pavilion",
+      "x": -311,
+      "y": 27,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "outpost",
+      "name": "The Outpost",
+      "type": "plaza",
+      "x": -270,
+      "y": 156,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "pav-germany",
+      "name": "Germany Pavilion",
+      "type": "pavilion",
+      "x": -179,
+      "y": 256,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "pav-italy",
+      "name": "Italy Pavilion",
+      "type": "pavilion",
+      "x": -27,
+      "y": 311,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "pav-america",
+      "name": "America Pavilion",
+      "type": "pavilion",
+      "x": 107,
+      "y": 293,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "attr-adv",
+      "name": "The American Adventure",
+      "type": "attraction",
+      "x": 98,
+      "y": 270,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "pav-japan",
+      "name": "Japan Pavilion",
+      "type": "pavilion",
+      "x": 221,
+      "y": 221,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "pav-morocco",
+      "name": "Morocco Pavilion",
+      "type": "pavilion",
+      "x": 293,
+      "y": 107,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "pav-france",
+      "name": "France Pavilion",
+      "type": "pavilion",
+      "x": 311,
+      "y": -27,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "attr-ratatouille",
+      "name": "Remy's Ratatouille Adventure",
+      "type": "attraction",
+      "x": 286,
+      "y": -25,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "land-eiffel",
+      "name": "Eiffel Tower (replica)",
+      "type": "landmark",
+      "x": 265,
+      "y": -18,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "gate-gateway",
+      "name": "International Gateway",
+      "type": "gate",
+      "x": 305,
+      "y": -135,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "pav-uk",
+      "name": "United Kingdom Pavilion",
+      "type": "pavilion",
+      "x": 239,
+      "y": -201,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "pav-canada",
+      "name": "Canada Pavilion",
+      "type": "pavilion",
+      "x": 132,
+      "y": -283,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "area-discovery",
+      "name": "World Discovery",
+      "type": "area",
+      "x": -160,
+      "y": -480,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "attr-testtrack",
+      "name": "Test Track",
+      "type": "attraction",
+      "x": -250,
+      "y": -380,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "attr-rewind",
+      "name": "Guardians of the Galaxy: Cosmic Rewind",
+      "type": "attraction",
+      "x": -200,
+      "y": -560,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "attr-missionspace",
+      "name": "Mission: SPACE",
+      "type": "attraction",
+      "x": -150,
+      "y": -540,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "area-nature",
+      "name": "World Nature",
+      "type": "area",
+      "x": 150,
+      "y": -460,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "attr-soarin",
+      "name": "Soarin' Across America",
+      "type": "attraction",
+      "x": 230,
+      "y": -360,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "area-land",
+      "name": "The Land",
+      "type": "area",
+      "x": 230,
+      "y": -500,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "attr-seas",
+      "name": "The Seas with Nemo & Friends",
+      "type": "attraction",
+      "x": 150,
+      "y": -590,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    },
+    {
+      "id": "attr-lionking",
+      "name": "Festival of the Lion King",
+      "type": "attraction",
+      "x": 75,
+      "y": -415,
+      "z": 0,
+      "confidence": "approximate",
+      "source": "position estimated from official 2026 EPCOT park map layout; identity documented (see provenance.md)"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-ring-mexico-norway",
+      "from": "pav-mexico",
+      "to": "pav-norway",
+      "weight": 188,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-norway-china",
+      "from": "pav-norway",
+      "to": "pav-china",
+      "weight": 162,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-china-outpost",
+      "from": "pav-china",
+      "to": "outpost",
+      "weight": 136,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-outpost-germany",
+      "from": "outpost",
+      "to": "pav-germany",
+      "weight": 136,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-germany-italy",
+      "from": "pav-germany",
+      "to": "pav-italy",
+      "weight": 162,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-italy-america",
+      "from": "pav-italy",
+      "to": "pav-america",
+      "weight": 136,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-america-japan",
+      "from": "pav-america",
+      "to": "pav-japan",
+      "weight": 135,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-japan-morocco",
+      "from": "pav-japan",
+      "to": "pav-morocco",
+      "weight": 135,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-morocco-france",
+      "from": "pav-morocco",
+      "to": "pav-france",
+      "weight": 136,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-france-uk",
+      "from": "pav-france",
+      "to": "pav-uk",
+      "weight": 189,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-uk-canada",
+      "from": "pav-uk",
+      "to": "pav-canada",
+      "weight": 135,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-canada-showcase",
+      "from": "pav-canada",
+      "to": "area-showcase",
+      "weight": 138,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-ring-showcase-mexico",
+      "from": "area-showcase",
+      "to": "pav-mexico",
+      "weight": 164,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "lagoon promenade segment; endpoints on the documented 1.2-mile perimeter circle (R≈312 m); weight = straight-line chord, upper bound"
+    },
+    {
+      "id": "e-entrance-plaza",
+      "from": "gate-main",
+      "to": "gate-plaza",
+      "weight": 50,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-plaza-celebration",
+      "from": "gate-plaza",
+      "to": "area-celebration",
+      "weight": 121,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-celebration-spaceship",
+      "from": "area-celebration",
+      "to": "land-spaceship",
+      "weight": 40,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-celebration-journey",
+      "from": "area-celebration",
+      "to": "attr-journey",
+      "weight": 71,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-journey-fountain",
+      "from": "attr-journey",
+      "to": "area-fountain",
+      "weight": 60,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-fountain-bridge",
+      "from": "area-fountain",
+      "to": "bridge-showcase",
+      "weight": 70,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-bridge-showcase",
+      "from": "bridge-showcase",
+      "to": "area-showcase",
+      "weight": 40,
+      "weightSource": "digitized-path",
+      "kind": "bridge",
+      "confidence": "approximate",
+      "note": "documented bridge; span estimated from map proportions"
+    },
+    {
+      "id": "e-gateway-uk",
+      "from": "gate-gateway",
+      "to": "pav-uk",
+      "weight": 94,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-gateway-france",
+      "from": "gate-gateway",
+      "to": "pav-france",
+      "weight": 109,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-celebration-discovery",
+      "from": "area-celebration",
+      "to": "area-discovery",
+      "weight": 175,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-discovery-testtrack",
+      "from": "area-discovery",
+      "to": "attr-testtrack",
+      "weight": 135,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-discovery-rewind",
+      "from": "area-discovery",
+      "to": "attr-rewind",
+      "weight": 90,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-discovery-missionspace",
+      "from": "area-discovery",
+      "to": "attr-missionspace",
+      "weight": 61,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-testtrack-rewind",
+      "from": "attr-testtrack",
+      "to": "attr-rewind",
+      "weight": 187,
+      "weightSource": "straight-line-approx",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    },
+    {
+      "id": "e-missionspace-rewind",
+      "from": "attr-missionspace",
+      "to": "attr-rewind",
+      "weight": 54,
+      "weightSource": "straight-line-approx",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    },
+    {
+      "id": "e-celebration-nature",
+      "from": "area-celebration",
+      "to": "area-nature",
+      "weight": 185,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-nature-soarin",
+      "from": "area-nature",
+      "to": "attr-soarin",
+      "weight": 129,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-nature-land",
+      "from": "area-nature",
+      "to": "area-land",
+      "weight": 90,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-nature-seas",
+      "from": "area-nature",
+      "to": "attr-seas",
+      "weight": 130,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-nature-lionking",
+      "from": "area-nature",
+      "to": "attr-lionking",
+      "weight": 88,
+      "weightSource": "digitized-path",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "walkway drawn on the official map; distance estimated from map proportions"
+    },
+    {
+      "id": "e-celebration-lionking",
+      "from": "area-celebration",
+      "to": "attr-lionking",
+      "weight": 166,
+      "weightSource": "straight-line-approx",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    },
+    {
+      "id": "e-soarin-land",
+      "from": "attr-soarin",
+      "to": "area-land",
+      "weight": 140,
+      "weightSource": "straight-line-approx",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    },
+    {
+      "id": "e-land-seas",
+      "from": "area-land",
+      "to": "attr-seas",
+      "weight": 121,
+      "weightSource": "straight-line-approx",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    },
+    {
+      "id": "e-mexico-pyramid",
+      "from": "pav-mexico",
+      "to": "land-pyramid",
+      "weight": 30,
+      "weightSource": "straight-line-approx",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    },
+    {
+      "id": "e-pyramid-granfiesta",
+      "from": "land-pyramid",
+      "to": "attr-granfiesta",
+      "weight": 20,
+      "weightSource": "straight-line-approx",
+      "kind": "indoor",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    },
+    {
+      "id": "e-norway-stavechurch",
+      "from": "pav-norway",
+      "to": "land-stavechurch",
+      "weight": 26,
+      "weightSource": "straight-line-approx",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    },
+    {
+      "id": "e-stavechurch-frozen",
+      "from": "land-stavechurch",
+      "to": "attr-frozen",
+      "weight": 12,
+      "weightSource": "straight-line-approx",
+      "kind": "indoor",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    },
+    {
+      "id": "e-america-adv",
+      "from": "pav-america",
+      "to": "attr-adv",
+      "weight": 25,
+      "weightSource": "straight-line-approx",
+      "kind": "indoor",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    },
+    {
+      "id": "e-france-ratatouille",
+      "from": "pav-france",
+      "to": "attr-ratatouille",
+      "weight": 26,
+      "weightSource": "straight-line-approx",
+      "kind": "indoor",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    },
+    {
+      "id": "e-france-eiffel",
+      "from": "pav-france",
+      "to": "land-eiffel",
+      "weight": 47,
+      "weightSource": "straight-line-approx",
+      "kind": "path",
+      "confidence": "approximate",
+      "note": "plausible direct link, straight-line estimate (not individually verified)"
+    }
+  ]
+}
