@@ -78,3 +78,129 @@ export function visibleLabelIds(placements: readonly LabelPlacement[], cameraDis
   }
   return visible;
 }
+
+// ── Phase 6: priority-aware collision policy (offset / fade / leader line) ──
+
+/**
+ * The extra context the richer policy needs (everything is optional — with
+ * an empty context the policy degrades to "major/medium/detail by tier",
+ * which is exactly the Phase 4.1 behaviour).
+ */
+export interface LabelContext {
+  hoveredId?: string | null;
+  selectedId?: string | null;
+  originId?: string | null;
+  destinationId?: string | null;
+  /** Route stops (the path's vertex ids, any order). */
+  routeIds?: readonly string[];
+}
+
+export type LabelVerdict = 'show' | 'offset' | 'fade' | 'hide';
+
+export interface LabelDecision {
+  id: string;
+  verdict: LabelVerdict;
+  /** Vertical screen-space offset in px (positive = up); non-zero only for 'offset'. */
+  offsetY: number;
+  /** 0..1 — how strongly the label is emphasised (route stops get a boost). */
+  emphasis: number;
+}
+
+/**
+ * Priority order (highest wins collisions):
+ *   1 hovered · 2 selected · 3 origin · 4 destination · 5 route stops
+ *   6 major landmarks · 7 other labels (medium/detail)
+ */
+function priorityOf(p: LabelPlacement, ctx: LabelContext): number {
+  if (p.id === ctx.hoveredId) return 0;
+  if (p.id === ctx.selectedId) return 1;
+  if (p.id === ctx.originId) return 2;
+  if (p.id === ctx.destinationId) return 3;
+  if (ctx.routeIds !== undefined && ctx.routeIds.includes(p.id)) return 4;
+  if (p.tier === 'major') return 5;
+  if (p.tier === 'medium') return 6;
+  return 7;
+}
+
+/** Candidate vertical offsets (px) to try before giving up and fading. */
+function offsetCandidates(halfHeight: number): number[] {
+  const step = halfHeight + 7;
+  return [step, -step, step * 2, -step * 2];
+}
+
+function shifted(rect: ScreenRect, dy: number): ScreenRect {
+  return { left: rect.left, top: rect.top - dy, right: rect.right, bottom: rect.bottom - dy };
+}
+
+/**
+ * Decide, per label: show / offset (with a leader line) / fade / hide.
+ *
+ * Rules:
+ *  - zoom tiers still apply (far → major+essentials only) — that is the only
+ *    'hide' source, and it is tier-based, never "random";
+ *  - labels are placed greedily by priority (hovered > selected > origin >
+ *    destination > route stops > major > other, nearer-to-camera first);
+ *  - on collision a label first tries vertical offsets (above/below, two
+ *    steps) — placed there with a leader line when it fits;
+ *  - if no offset fits it FADES to low opacity instead of disappearing
+ *    (the hovered label is the exception: it is always shown, even over
+ *    others, since it is the one being actively inspected).
+ */
+export function resolveLabels(
+  placements: readonly LabelPlacement[],
+  cameraDistance: number,
+  ctx: LabelContext,
+): Map<string, LabelDecision> {
+  const decisions = new Map<string, LabelDecision>();
+  const ctxRoute = new Set(ctx.routeIds ?? []);
+  for (const p of placements) {
+    const essential =
+      p.id === ctx.hoveredId || p.id === ctx.selectedId || p.id === ctx.originId || p.id === ctx.destinationId;
+    const tierOk = tierAllowed(p.tier, cameraDistance);
+    if (!essential && !tierOk) {
+      decisions.set(p.id, { id: p.id, verdict: 'hide', offsetY: 0, emphasis: 0 });
+      continue;
+    }
+    decisions.set(p.id, { id: p.id, verdict: 'show', offsetY: 0, emphasis: ctxRoute.has(p.id) ? 1 : 0 });
+  }
+
+  const candidates = placements
+    .filter((p) => decisions.get(p.id)!.verdict !== 'hide')
+    .sort((a, b) => {
+      const pr = priorityOf(a, ctx) - priorityOf(b, ctx);
+      if (pr !== 0) return pr;
+      return a.distance - b.distance;
+    });
+
+  const placed: ScreenRect[] = [];
+  for (const c of candidates) {
+    const d = decisions.get(c.id)!;
+    const hoverWin = c.id === ctx.hoveredId;
+    if (!placed.some((r) => rectsIntersect(r, c.rect))) {
+      placed.push(c.rect);
+      continue; // fits where it is
+    }
+    const halfH = (c.rect.bottom - c.rect.top) / 2;
+    let resolved = false;
+    for (const dy of offsetCandidates(halfH)) {
+      const r = shifted(c.rect, dy);
+      if (!placed.some((o) => rectsIntersect(o, r))) {
+        placed.push(r);
+        d.verdict = 'offset';
+        d.offsetY = dy;
+        resolved = true;
+        break;
+      }
+    }
+    if (!resolved) {
+      if (hoverWin) {
+        // Hovered label always wins — it may overlap lower-priority labels.
+        placed.push(c.rect);
+      } else {
+        d.verdict = 'fade';
+        d.offsetY = 0;
+      }
+    }
+  }
+  return decisions;
+}

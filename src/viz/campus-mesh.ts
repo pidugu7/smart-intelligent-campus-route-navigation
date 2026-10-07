@@ -63,18 +63,25 @@ export interface CampusMeshes {
   edgeByPair: Map<string, THREE.Mesh>;
   /** Label sprite per vertex. */
   labels: Map<string, THREE.Sprite>;
+  /** Engineer "graph" overlay: one weight sprite per edge. */
+  weightLabels: THREE.Group;
   /** Bounds of the "useful" model (buildings, walkways, nodes) — excludes
    *  the plinth and label sprites; drives camera framing. */
   contentBox: THREE.Box3;
   worldPos: (id: string) => THREE.Vector3;
   setLabelsVisible(visible: boolean): void;
   labelsVisible(): boolean;
+  /** Graph overlay (nodes + edge weights) on/off — Engineer "Show Graph". */
+  setGraphVisible(visible: boolean): void;
+  graphVisible(): boolean;
 }
 
 /** Dataset (x, y) → three.js world position (north = -z, y = up). */
 export function toWorld(x: number, y: number, z = 0): THREE.Vector3 {
   return new THREE.Vector3(x, z, -y);
 }
+
+const UP = new THREE.Vector3(0, 1, 0);
 
 function std(color: number, opts: { metalness?: number; roughness?: number; flat?: boolean; opacity?: number } = {}): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({
@@ -131,6 +138,16 @@ function box(w: number, h: number, d: number, mat: THREE.Material, x = 0, y = 0,
 
 function cylinder(rTop: number, rBottom: number, h: number, seg: number, mat: THREE.Material, x = 0, y = 0, z = 0): THREE.Mesh {
   return mesh(new THREE.CylinderGeometry(rTop, rBottom, h, seg), mat, x, y, z);
+}
+
+/** A small stylised tree: trunk + one or two stacked cones (low-poly). */
+function tree(x = 0, y = 0, z = 0): THREE.Group {
+  const t = new THREE.Group();
+  t.add(cylinder(0.9, 1.2, 4, 6, std(0x6b4a2f), 0, 2, 0));
+  t.add(pyramid(5, 9, std(0x4f7a4a, { flat: true }), 4));
+  t.add(pyramid(3.6, 6, std(0x5d8a55, { flat: true }), 10));
+  t.position.set(x, y, z);
+  return t;
 }
 
 // ── building table: documented landmark → our own simple geometry ──────────
@@ -253,12 +270,61 @@ function buildingFor(id: string, type: string): THREE.Group | null {
       g.add(cylinder(28, 28, 2, 36, std(0xcfd6df), 0, 1, 0));
       return g;
     }
-    case 'area-celebration':
-    case 'area-discovery':
+    case 'area-celebration': {
+      g.add(cylinder(30, 30, 2, 36, std(0x3a4a3f), 0, 1, 0));
+      return g;
+    }
+    case 'area-discovery': {
+      // World Discovery — stylized tech cluster: a lean observation tower,
+      // two angular ride halls and a low planetarium shell (original massing).
+      g.add(cylinder(30, 30, 2, 36, std(0x3d4653), 0, 1, 0));
+      // observation tower (slightly tapered shaft + viewing deck)
+      g.add(cylinder(2.6, 3.6, 46, 8, std(0xaebccb, { metalness: 0.35, roughness: 0.55 }), -14, 23, -8));
+      g.add(cylinder(6.5, 7, 4.5, 8, std(0x8fa0b5, { metalness: 0.3, roughness: 0.6 }), -14, 48, -8));
+      // angular ride halls (slab + tilted roof slab)
+      g.add(box(26, 11, 18, std(0x93a2b5, { metalness: 0.25, roughness: 0.6 }), 14, 5.5, 10));
+      const roofD = box(28, 2, 20, std(0x5b6b7a, { metalness: 0.3, roughness: 0.5 }));
+      roofD.position.set(14, 12.5, 10);
+      roofD.rotation.z = 0.14;
+      g.add(roofD);
+      g.add(box(20, 9, 14, std(0x8494a8, { metalness: 0.25, roughness: 0.6 }), 8, 4.5, -16));
+      // planetarium shell
+      g.add(dome(10, std(0xb9c6d6, { flat: false, metalness: 0.4, roughness: 0.45 }), -2));
+      g.add(cylinder(11, 11.5, 2.4, 20, std(0x7c8da2), -2, 1.2, 0));
+      for (const [tx, tz] of [[-26, 18], [28, -6], [-6, 26]] as const) {
+        g.add(tree(tx, 1, tz));
+      }
+      return g;
+    }
     case 'area-nature': {
-      const tints = [0x3a4a3f, 0x403c33, 0x33413a] as const;
-      const i = id === 'area-celebration' ? 0 : id === 'area-discovery' ? 1 : 2;
-      g.add(cylinder(30, 30, 2, 36, std(tints[i]), 0, 1, 0));
+      // World Nature — stylized mountain massing (Soarin's "across America"
+      // ridgeline) plus woodland: overlapping cones, varied heights, warm
+      // rock + green canopy accents. Original geometry only.
+      g.add(cylinder(30, 30, 2, 36, std(0x33413a), 0, 1, 0));
+      const ridge: Array<[number, number, number, number, number]> = [
+        // [x, z, radius, height, color]
+        [-16, -10, 15, 30, 0x6d7d64],
+        [6, -16, 18, 38, 0x5d6f58],
+        [22, -4, 13, 26, 0x77876c],
+        [-4, 4, 11, 20, 0x8a9a80],
+        [14, 12, 9, 15, 0x93a289],
+      ];
+      for (const [x, z, r, h, c] of ridge) {
+        const peak = pyramid(r, h, std(c, { flat: true }), 1);
+        peak.position.x = x;
+        peak.position.z = z;
+        g.add(peak);
+        // snow/dust cap on the two tallest
+        if (h >= 30) {
+          const cap = pyramid(r * 0.34, h * 0.3, std(0xd8e0da, { flat: true }), 1 + h * 0.7);
+          cap.position.x = x;
+          cap.position.z = z;
+          g.add(cap);
+        }
+      }
+      for (const [tx, tz] of [[-27, 14], [28, 20], [-24, -24], [27, -22], [-2, 26]] as const) {
+        g.add(tree(tx, 1, tz));
+      }
       return g;
     }
 
@@ -448,6 +514,41 @@ function makeLabel(text: string, major: boolean): THREE.Sprite {
   return sprite;
 }
 
+/** Small edge-weight chip for the Engineer "graph" overlay. */
+function makeWeightLabel(text: string): THREE.Sprite {
+  const font = '500 26px Inter, ui-sans-serif, system-ui, "Segoe UI", sans-serif';
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d')!;
+  ctx.font = font;
+  const padX = 12;
+  const w = Math.ceil(ctx.measureText(text).width) + padX * 2;
+  const h = 38;
+  canvas.width = w;
+  canvas.height = h;
+  ctx.font = font;
+  const r = 7;
+  ctx.beginPath();
+  ctx.roundRect(1, 1, w - 2, h - 2, r);
+  ctx.fillStyle = 'rgba(8, 12, 22, 0.78)';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(245, 185, 66, 0.55)';
+  ctx.stroke();
+  ctx.fillStyle = '#f5d48a';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, w / 2, h / 2 + 1);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.anisotropy = 4;
+  const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true, opacity: 0.95 });
+  const sprite = new THREE.Sprite(material);
+  const worldH = 7;
+  sprite.scale.set(worldH * (w / h), worldH, 1);
+  sprite.renderOrder = 19;
+  sprite.userData.noBounds = true;
+  return sprite;
+}
+
 // ── main builder ────────────────────────────────────────────────────────────
 
 /** Vertex ids whose graph node floats above a tall building. */
@@ -549,6 +650,23 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
       edgeByPair.set(pairKey(e.fromId, e.toId), clickable);
       group.add(deck);
       m = clickable;
+    } else if (e.widthClass === 1) {
+      // Promenade class → a gently bowed ribbon that follows the lagoon's
+      // curve (endpoints stay exactly on the dataset coordinates; only the
+      // visual centreline bows outward, ~5% of the chord).
+      const radius = walkwayRadius(e.widthClass) + 0.4; // slightly wider ribbon
+      const mid = a.clone().add(b).multiplyScalar(0.5);
+      const outward = new THREE.Vector3(mid.x, 0, mid.z);
+      if (outward.lengthSq() < 1e-4) outward.crossVectors(dir, UP).normalize();
+      else outward.normalize();
+      const control = mid.clone().addScaledVector(outward, len * 0.05);
+      const curve = new THREE.QuadraticBezierCurve3(a.clone(), control, b.clone());
+      const geo = new THREE.TubeGeometry(curve, 24, radius, 10, false);
+      m = new THREE.Mesh(geo, std(walkwayBaseColor(e.widthClass), { flat: false, opacity: 0.96 }));
+      m.receiveShadow = true;
+      edges.set(e.id, m);
+      edgeByPair.set(pairKey(e.fromId, e.toId), m);
+      group.add(m);
     } else {
       const radius = walkwayRadius(e.widthClass);
       const geo = new THREE.CylinderGeometry(radius, radius, len, 10, 1, true);
@@ -565,6 +683,21 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     m.userData.toId = e.toId;
     m.userData.baseColor = e.isBridge ? COLORS.bridge : walkwayBaseColor(e.widthClass);
   }
+
+  // Engineer "graph" overlay: one weight chip per edge (hidden in Guest mode).
+  const weightLabels = new THREE.Group();
+  weightLabels.name = 'weight-labels';
+  for (const e of layout.edges) {
+    const w = makeWeightLabel(String(e.weight));
+    w.position.set(
+      (e.fromX + e.toX) / 2,
+      9,
+      -(e.fromY + e.toY) / 2,
+    );
+    weightLabels.add(w);
+  }
+  weightLabels.visible = false;
+  group.add(weightLabels);
 
   // Buildings + graph nodes + labels.
   const nodes = new Map<string, THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>>();
@@ -614,16 +747,26 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     for (const s of labels.values()) s.visible = visible;
   };
 
+  let graphVisibility = false;
+  const setGraphVisible = (visible: boolean): void => {
+    graphVisibility = visible;
+    weightLabels.visible = visible;
+    for (const n of nodes.values()) n.visible = visible;
+  };
+
   return {
     group,
     nodes,
     edges,
     edgeByPair,
     labels,
+    weightLabels,
     contentBox,
     worldPos,
     setLabelsVisible,
     labelsVisible: () => labelVisibility,
+    setGraphVisible,
+    graphVisible: () => graphVisibility,
   };
 }
 

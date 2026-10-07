@@ -133,6 +133,26 @@ export class TraceReplayer {
     this.doneFired = false;
   }
 
+  /** The recorded event at an absolute index (for scrubbing/re-deriving state). */
+  eventAt(index: number): TraceEvent {
+    return this.trace[Math.max(0, Math.min(index, this.trace.length - 1))]!;
+  }
+
+  /**
+   * Jump playback to an absolute event index (timeline scrubbing).
+   * No events are re-fired — the consumer re-applies the prefix itself
+   * (the scene highlights are cumulative, so the prefix must be re-derived).
+   * State becomes 'done' at the end of the trace, otherwise 'paused'.
+   */
+  seekTo(index: number): void {
+    const clamped = Math.max(0, Math.min(index, this.trace.length));
+    this.index = clamped;
+    this.accumulator = 0;
+    this.doneFired = clamped >= this.trace.length && this.trace.length > 0;
+    this.replayState = this.doneFired ? 'done' : 'paused';
+    if (this.trace.length > 0) this.cb.onProgress?.(clamped, this.trace.length);
+  }
+
   /** Playback speed in events per second. */
   setSpeed(eventsPerSecond: number): void {
     this.eventsPerSecond = Math.max(0.5, Math.min(120, eventsPerSecond));

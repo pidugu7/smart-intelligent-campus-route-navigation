@@ -35,6 +35,8 @@ export interface LayoutEdge {
   toX: number;
   toY: number;
   kind: string;
+  /** Edge weight (metres) — used only for the engineer "graph" overlay labels. */
+  weight: number;
   /** 1 = promenade-class (wide), 0 = regular path, -1 = indoor/narrow. */
   widthClass: number;
   /** True for the walkable bridge (drawn as a deck, not a tube). */
@@ -110,6 +112,7 @@ export function buildCampusLayout(dataset: Dataset): CampusLayout {
       toX: b.x,
       toY: b.y,
       kind: e.kind,
+      weight: e.weight,
       widthClass: widthClassOf(e.kind),
       isBridge: e.kind === 'bridge',
     });

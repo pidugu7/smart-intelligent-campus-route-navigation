@@ -27,15 +27,74 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
   return n;
 }
 
-function fmtMeters(m: number): string {
+export function fmtMeters(m: number): string {
   return `${Math.round(m).toLocaleString('en-IN')} m`;
 }
 
-function fmtTime(seconds: number): string {
+/** Compact distance for guest surfaces: kilometres above 1000 m. */
+export function fmtDistance(m: number): string {
+  if (m < 1000) return `${Math.round(m)} m`;
+  return `${(m / 1000).toLocaleString('en-IN', { maximumFractionDigits: 2 })} km`;
+}
+
+export function fmtTime(seconds: number): string {
   if (seconds < 90) return `${Math.round(seconds)} s`;
   const mins = Math.floor(seconds / 60);
   const rem = Math.round(seconds % 60);
   return rem === 0 ? `${mins} min` : `${mins} min ${rem} s`;
+}
+
+/**
+ * Guest-mode compact summary strip (under the route card):
+ *   1.01 km · ≈ 12 min · Dijkstra · ✓ Route found
+ * No graph terminology, no work counters, no raw trace wording.
+ */
+export function renderGuestSummary(
+  container: HTMLElement,
+  result: RouteResult | null,
+  algoLabel: string,
+  bfsRouteLength: number | null,
+): void {
+  container.innerHTML = '';
+  if (result === null) {
+    container.hidden = true;
+    return;
+  }
+  container.hidden = false;
+
+  const item = (value: string, label: string, cls = ''): void => {
+    const d = el('div', `gs-item ${cls}`);
+    d.appendChild(el('div', 'gs-value', value));
+    d.appendChild(el('div', 'gs-label', label));
+    d.appendChild(el('span', 'gs-sep'));
+    container.appendChild(d);
+  };
+
+  if (result.status === 'unreachable') {
+    item('—', 'distance');
+    item('—', 'walk');
+    item(algoLabel, 'algorithm');
+    const bad = el('div', 'gs-item gs-bad');
+    bad.appendChild(el('div', 'gs-value', 'No route'));
+    bad.appendChild(el('div', 'gs-label', 'destination unreachable'));
+    container.appendChild(bad);
+    return;
+  }
+
+  const isBfs = algoLabel === 'BFS';
+  const cost = isBfs && bfsRouteLength !== null ? bfsRouteLength : result.totalDistance;
+  const walkSeconds = estimateWalkTime(cost).estimatedSeconds;
+  if (isBfs) {
+    item(`${result.totalDistance}`, isBfs ? 'stops (fewest)' : 'distance');
+  } else {
+    item(fmtDistance(result.totalDistance), 'distance');
+  }
+  item(`≈ ${fmtTime(walkSeconds)}`, 'walk time');
+  item(algoLabel, 'algorithm');
+  const ok = el('div', 'gs-item gs-ok');
+  ok.appendChild(el('div', 'gs-value', isBfs ? 'Fewest hops' : 'Route found'));
+  ok.appendChild(el('div', 'gs-label', `${result.path.length - 1} walkways`));
+  container.appendChild(ok);
 }
 
 /** Sum of dataset edge weights along a path (true route length in metres). */
