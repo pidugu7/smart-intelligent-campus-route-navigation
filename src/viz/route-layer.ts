@@ -112,6 +112,12 @@ export interface ShowRouteOptions {
   reveal?: boolean;
   /** Animate the draw-on (pass false under prefers-reduced-motion). */
   animate?: boolean;
+  /**
+   * Emissive strength of the ribbon. The primary route uses a strong value
+   * so it sits above the bloom threshold: a bright crisp core + soft halo
+   * (secondary routes stay dim so they don't compete).
+   */
+  glow?: number;
 }
 
 const TRAIL_COUNT = 30;
@@ -280,7 +286,7 @@ export class RouteLayer {
   /** Show one route as a tube; options control pulse / width / chevrons. */
   showRoute(path: readonly string[], color: number, opts: ShowRouteOptions = {}): THREE.Mesh | null {
     if (path.length < 2) return null;
-    const { pulse = false, radius = PRIMARY_ROUTE_RADIUS, chevrons = false, reveal = false, animate = true } = opts;
+    const { pulse = false, radius = PRIMARY_ROUTE_RADIUS, chevrons = false, reveal = false, animate = true, glow = 0.6 } = opts;
     const pts: THREE.Vector3[] = path.map((id) => this.meshes.worldPos(id).add(new THREE.Vector3(0, 7, 0)));
     const curve = new THREE.CurvePath<THREE.Vector3>();
     for (let i = 0; i + 1 < pts.length; i += 1) {
@@ -290,7 +296,7 @@ export class RouteLayer {
     const mat = new THREE.MeshStandardMaterial({
       color,
       emissive: color,
-      emissiveIntensity: 0.6,
+      emissiveIntensity: glow,
       roughness: 0.35,
       flatShading: false,
     });

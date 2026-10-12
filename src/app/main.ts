@@ -700,6 +700,7 @@ async function main(): Promise<void> {
         radius: PRIMARY_ROUTE_RADIUS,
         reveal: true,
         animate: !REDUCED_MOTION,
+        glow: 1.35, // bright crisp core, above the bloom threshold
       });
       routeLayer.applyRouteEmphasis([r.path]);
       routeLayer.setTargetState(true);
@@ -809,6 +810,7 @@ async function main(): Promise<void> {
         radius: PRIMARY_ROUTE_RADIUS,
         reveal: true,
         animate: !REDUCED_MOTION,
+        glow: 1.35, // bright crisp core, above the bloom threshold
       });
       ui.btnFollow.disabled = false;
       if (alt.alternative !== null) {

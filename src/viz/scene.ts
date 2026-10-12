@@ -122,6 +122,8 @@ interface MoodState {
   keyIntensity: number;
   fillColor: THREE.Color;
   fillIntensity: number;
+  rimColor: THREE.Color;
+  rimIntensity: number;
   waterDeep: THREE.Color;
   waterShallow: THREE.Color;
   waterSparkle: number;
@@ -148,6 +150,8 @@ function moodStateFrom(m: Mood): MoodState {
     keyIntensity: m.keyIntensity,
     fillColor: new THREE.Color(m.fillColor),
     fillIntensity: m.fillIntensity,
+    rimColor: new THREE.Color(m.rimColor),
+    rimIntensity: m.rimIntensity,
     waterDeep: new THREE.Color(m.waterDeep),
     waterShallow: new THREE.Color(m.waterShallow),
     waterSparkle: m.waterSparkle,
@@ -174,6 +178,8 @@ function lerpMood(live: MoodState, dest: MoodState, k: number): void {
   live.keyIntensity = THREE.MathUtils.lerp(live.keyIntensity, dest.keyIntensity, k);
   live.fillColor.lerp(dest.fillColor, k);
   live.fillIntensity = THREE.MathUtils.lerp(live.fillIntensity, dest.fillIntensity, k);
+  live.rimColor.lerp(dest.rimColor, k);
+  live.rimIntensity = THREE.MathUtils.lerp(live.rimIntensity, dest.rimIntensity, k);
   live.waterDeep.lerp(dest.waterDeep, k);
   live.waterShallow.lerp(dest.waterShallow, k);
   live.waterSparkle = THREE.MathUtils.lerp(live.waterSparkle, dest.waterSparkle, k);
@@ -220,6 +226,7 @@ export class SceneManager {
   private readonly hemi: THREE.HemisphereLight;
   private readonly sun: THREE.DirectionalLight;
   private readonly fill: THREE.DirectionalLight;
+  private readonly rim: THREE.DirectionalLight;
   private readonly skyUniforms: {
     uTop: THREE.IUniform<THREE.Color>;
     uMid: THREE.IUniform<THREE.Color>;
@@ -316,6 +323,11 @@ export class SceneManager {
     this.fill = new THREE.DirectionalLight(0x4a6a9e, 0.55);
     this.fill.position.set(-520, 700, 640);
     this.scene.add(this.fill);
+    // Soft cool rim from behind/above — lifts building silhouettes off the
+    // sky at night so their shapes read (no shadows, mood-driven intensity).
+    this.rim = new THREE.DirectionalLight(0x7fa8d8, 0.9);
+    this.rim.position.set(180, 520, -820);
+    this.scene.add(this.rim);
 
     // Sky dome + stars. The gradient is computed per fragment from the view
     // direction (smooth at any dome resolution); a soft warm glow is added
@@ -381,8 +393,10 @@ export class SceneManager {
     }
     const starGeo = new THREE.BufferGeometry();
     starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    // Star tint kept just under the bloom threshold so stars stay crisp
+    // points (subtle) rather than blooming into soft blobs.
     this.starMaterial = new THREE.PointsMaterial({
-      color: 0xdde6ff,
+      color: 0xb8c4e8,
       size: 2.1,
       sizeAttenuation: false,
       transparent: true,
@@ -570,6 +584,8 @@ export class SceneManager {
       this.mood.keyIntensity = fresh.keyIntensity;
       this.mood.fillColor.copy(fresh.fillColor);
       this.mood.fillIntensity = fresh.fillIntensity;
+      this.mood.rimColor.copy(fresh.rimColor);
+      this.mood.rimIntensity = fresh.rimIntensity;
       this.mood.waterDeep.copy(fresh.waterDeep);
       this.mood.waterShallow.copy(fresh.waterShallow);
       this.mood.waterSparkle = fresh.waterSparkle;
@@ -605,6 +621,8 @@ export class SceneManager {
     this.sun.intensity = m.keyIntensity;
     this.fill.color.copy(m.fillColor);
     this.fill.intensity = m.fillIntensity;
+    this.rim.color.copy(m.rimColor);
+    this.rim.intensity = m.rimIntensity;
     this.renderer.toneMappingExposure = m.exposure;
     this.starMaterial.opacity = m.stars;
     this.skyUniforms.uTop.value.copy(m.skyTop);
@@ -691,7 +709,10 @@ export class SceneManager {
       composer.addPass(new RenderPass(this.scene, this.camera));
     }
     if (tier.bloom) {
-      const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.55, 0.65, 0.78);
+      // Tight, thresholded bloom: only genuinely bright emissives (route
+      // core, lamp heads, blueprint nodes) glow — buildings stay clean and
+      // the halo stays close to its source instead of bleeding over.
+      const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.45, 0.5, 0.85);
       composer.addPass(bloom);
     }
     if (tier.vignette) {

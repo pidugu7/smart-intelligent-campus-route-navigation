@@ -32,6 +32,9 @@ export interface Mood {
   /** Cool fill light (no shadows). */
   fillColor: number;
   fillIntensity: number;
+  /** Soft cool rim light (no shadows) — keeps building silhouettes readable. */
+  rimColor: number;
+  rimIntensity: number;
   /** Lagoon shader colours + sparkle amount (0..1). */
   waterDeep: number;
   waterShallow: number;
@@ -67,9 +70,11 @@ export const MOODS: Record<MoodName, Mood> = {
     hemiGround: 0x77836a,
     hemiIntensity: 1.2,
     keyColor: 0xfff0d6,
-    keyIntensity: 2.3,
+    keyIntensity: 2.0,
     fillColor: 0xa8c4e6,
     fillIntensity: 0.75,
+    rimColor: 0x9db8dd,
+    rimIntensity: 0.25,
     waterDeep: 0x17506b,
     waterShallow: 0x5cb8c8,
     waterSparkle: 0.4,
@@ -80,30 +85,36 @@ export const MOODS: Record<MoodName, Mood> = {
     exposure: 1.05,
     sunGlow: 0.55,
   },
-  /** Deep night: stars out, lamps carry the scene, water reflects. */
+  /**
+   * Night: a readable DUSK-BLUE sky (not near-black), subtle stars, warm
+   * lamp glow, a cool rim light so building silhouettes read, and ground
+   * lifted to a dark green-blue. No large pure-black areas.
+   */
   night: {
-    skyTop: 0x04070f,
-    skyMid: 0x0a1224,
-    skyHorizon: 0x1c2745,
-    fogColor: 0x070d1a,
+    skyTop: 0x0a1428,
+    skyMid: 0x16233f,
+    skyHorizon: 0x2a3c60,
+    fogColor: 0x0d1626,
     fogNear: 2000,
     fogFar: 6200,
-    hemiSky: 0x6f86b8,
-    hemiGround: 0x10141f,
-    hemiIntensity: 0.5,
-    keyColor: 0x9db4dd,
-    keyIntensity: 0.55,
-    fillColor: 0x22304d,
-    fillIntensity: 0.45,
-    waterDeep: 0x081826,
-    waterShallow: 0x1e4f63,
+    hemiSky: 0x8aa5d6,
+    hemiGround: 0x141a28,
+    hemiIntensity: 0.72,
+    keyColor: 0xbcd0f0,
+    keyIntensity: 0.85,
+    fillColor: 0x2c3f66,
+    fillIntensity: 0.55,
+    rimColor: 0x7fa8d8,
+    rimIntensity: 0.9,
+    waterDeep: 0x0a2032,
+    waterShallow: 0x24586e,
     waterSparkle: 0.95,
-    groundColor: 0x6f8272,
-    stars: 1.0,
+    groundColor: 0x748a8a,
+    stars: 0.75,
     lampGlow: 1.0,
     nodeGlow: 0,
-    exposure: 0.92,
-    sunGlow: 0.12,
+    exposure: 1.0,
+    sunGlow: 0.1,
   },
   /** Engineer: dark glass / holographic blueprint, cyan-teal energy. */
   blueprint: {
@@ -120,6 +131,8 @@ export const MOODS: Record<MoodName, Mood> = {
     keyIntensity: 0.75,
     fillColor: 0x2a4a66,
     fillIntensity: 0.5,
+    rimColor: 0x2a7a8e,
+    rimIntensity: 0.45,
     waterDeep: 0x06222e,
     waterShallow: 0x1a5a6e,
     waterSparkle: 0.3,
