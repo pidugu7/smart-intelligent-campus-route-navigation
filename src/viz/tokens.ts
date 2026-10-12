@@ -45,32 +45,40 @@ export interface Mood {
   nodeGlow: number;
   /** Overall scene brightness multiplier applied to key/fill. */
   exposure: number;
+  /** Warm sun-glow band near the horizon (0..1). */
+  sunGlow: number;
 }
 
 export const MOODS: Record<MoodName, Mood> = {
-  /** Guest default: dusk gradient, warm lantern light, glowing lagoon. */
+  /**
+   * Guest "day" default: a real daylight sky — warm cream horizon (soft
+   * golden-hour light) rising to a calm blue zenith, with a subtle sun
+   * glow low in the west and light warm fog that dissolves the island
+   * edge into the horizon. Not a dusk, not a red backdrop.
+   */
   twilight: {
-    skyTop: 0x101a38,
-    skyMid: 0x38305e,
-    skyHorizon: 0xb46a4e,
-    fogColor: 0x232a4a,
-    fogNear: 2200,
-    fogFar: 6800,
-    hemiSky: 0x8ea0d0,
-    hemiGround: 0x2a2030,
-    hemiIntensity: 0.95,
-    keyColor: 0xffcf9e,
-    keyIntensity: 1.55,
-    fillColor: 0x4a6a9e,
-    fillIntensity: 0.55,
-    waterDeep: 0x14344e,
-    waterShallow: 0x3f8a9e,
-    waterSparkle: 0.55,
-    groundColor: 0x9fb29a,
-    stars: 0.18,
-    lampGlow: 0.75,
+    skyTop: 0x6fa3d8,
+    skyMid: 0x9fc0e4,
+    skyHorizon: 0xf0d2ae,
+    fogColor: 0xcbb096,
+    fogNear: 2400,
+    fogFar: 7400,
+    hemiSky: 0xcfe0f5,
+    hemiGround: 0x77836a,
+    hemiIntensity: 1.2,
+    keyColor: 0xfff0d6,
+    keyIntensity: 2.3,
+    fillColor: 0xa8c4e6,
+    fillIntensity: 0.75,
+    waterDeep: 0x17506b,
+    waterShallow: 0x5cb8c8,
+    waterSparkle: 0.4,
+    groundColor: 0xbcc9ad,
+    stars: 0.0,
+    lampGlow: 0.12,
     nodeGlow: 0,
-    exposure: 1.0,
+    exposure: 1.05,
+    sunGlow: 0.55,
   },
   /** Deep night: stars out, lamps carry the scene, water reflects. */
   night: {
@@ -95,6 +103,7 @@ export const MOODS: Record<MoodName, Mood> = {
     lampGlow: 1.0,
     nodeGlow: 0,
     exposure: 0.92,
+    sunGlow: 0.12,
   },
   /** Engineer: dark glass / holographic blueprint, cyan-teal energy. */
   blueprint: {
@@ -119,6 +128,7 @@ export const MOODS: Record<MoodName, Mood> = {
     lampGlow: 0.55,
     nodeGlow: 1.0,
     exposure: 0.95,
+    sunGlow: 0.04,
   },
 };
 

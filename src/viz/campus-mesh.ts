@@ -14,7 +14,7 @@
 
 import * as THREE from 'three';
 import type { CampusLayout } from './layout';
-import type { MoodHooks } from './scene';
+import { SUN_DIR, type MoodHooks } from './scene';
 import { MOODS, mulberry32 } from './tokens';
 
 // ── palette (original, restrained) ─────────────────────────────────────────
@@ -68,7 +68,7 @@ export interface CampusMeshes {
   /** Engineer "graph" overlay: one weight sprite per edge. */
   weightLabels: THREE.Group;
   /** Bounds of the "useful" model (buildings, walkways, nodes) — excludes
-   *  the plinth and label sprites; drives camera framing. */
+   *  the terrain skirt/floor and label sprites; drives camera framing. */
   contentBox: THREE.Box3;
   worldPos: (id: string) => THREE.Vector3;
   setLabelsVisible(visible: boolean): void;
@@ -78,6 +78,8 @@ export interface CampusMeshes {
   graphVisible(): boolean;
   /** Mood-system tint slots (SceneManager.attachMoodHooks). */
   moodHooks: MoodHooks;
+  /** Low quality → flat water + fewer sparkle points (see quality tiers). */
+  setWaterDetail(low: boolean): void;
   /** Per-frame animation: water uTime + pennant sway. */
   tick(t: number): void;
 }
@@ -596,13 +598,37 @@ function makeGroundTexture(): THREE.CanvasTexture {
   return tex;
 }
 
+// ── value noise (hash-based, no sines → no periodic grid / moiré) ─────────
+const WATER_NOISE_GLSL = /* glsl */ `
+  float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+  float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  }
+  float fbm(vec2 p) {
+    return 0.55 * vnoise(p) + 0.30 * vnoise(p * 2.17 + 7.31) + 0.15 * vnoise(p * 4.43 + 17.7);
+  }
+`;
+
 /**
  * Lagoon water: a small hand-written shader (no assets).
- *  - fresnel-style mix between deep and shallow tones
- *  - two travelling sine ripple fields + a high-frequency sparkle
- *  - a fake sky-reflection band near the rim (labelled: approximation,
- *    there is no real reflection probe)
+ *  - deep→shallow radial gradient with a noise-wobbled, organic shoreline
+ *  - soft low-frequency ripple normals (value-noise finite differences —
+ *    deliberately NOT sines: sine products create visible grid rows/moiré)
+ *  - true view-dependent fresnel mixing in the sky tint at grazing angles
  *  - manual distance fog so the shader matches the scene fog
+ *  - sparkle is a separate random Points cloud (see makeSparklePoints)
+ * Quality: uDetail = 0 on Low (flat surface, no ripple normal work).
  */
 function makeWaterMaterial(lagoonRadius: number): {
   mat: THREE.ShaderMaterial;
@@ -614,11 +640,16 @@ function makeWaterMaterial(lagoonRadius: number): {
     uTime: { value: 0 },
     uDeep: { value: new THREE.Color(MOODS.twilight.waterDeep) },
     uShallow: { value: new THREE.Color(MOODS.twilight.waterShallow) },
+    uSky: { value: new THREE.Color(MOODS.twilight.skyMid) },
     uSparkle: { value: MOODS.twilight.waterSparkle },
+    uSparkleColor: { value: new THREE.Color(MOODS.twilight.waterShallow) },
     uFogColor: { value: new THREE.Color(MOODS.twilight.fogColor) },
     uFogNear: { value: MOODS.twilight.fogNear },
     uFogFar: { value: MOODS.twilight.fogFar },
+    uDetail: { value: 1 },
+    uDensity: { value: 1 },
     uRadius: { value: lagoonRadius },
+    uSunDir: { value: SUN_DIR.clone() },
   };
   const mat = new THREE.ShaderMaterial({
     uniforms,
@@ -636,51 +667,144 @@ function makeWaterMaterial(lagoonRadius: number): {
       uniform float uTime;
       uniform vec3 uDeep;
       uniform vec3 uShallow;
-      uniform float uSparkle;
+      uniform vec3 uSky;
       uniform vec3 uFogColor;
       uniform float uFogNear;
       uniform float uFogFar;
-      uniform float uRadius;
+      uniform float uDetail;
+      uniform vec3 uSunDir;
       varying vec2 vUv;
       varying vec3 vWorld;
+      ${WATER_NOISE_GLSL}
       void main() {
         // uv of a CircleGeometry: 0..1 across the disc, centre at 0.5
         vec2 p = (vUv - 0.5) * 2.0;
         float d = length(p);
         float t = uTime;
-        // Two overlapping ripple fields (cheap, deterministic).
-        float w1 = sin(p.x * 16.0 + t * 0.8) * sin(p.y * 14.0 - t * 0.6);
-        float w2 = sin((p.x + p.y) * 28.0 - t * 1.5) * 0.5;
-        float ripple = w1 * 0.55 + w2 * 0.35;
-        // Fresnel-style: shallow/brighter toward the rim (grazing view).
-        float fres = smoothstep(0.15, 1.0, d);
-        vec3 col = mix(uDeep, uShallow, clamp(fres * 0.9 + ripple * 0.22, 0.0, 1.0));
-        // Fake reflection band near the rim (approximation, not a probe).
-        col += uShallow * 0.14 * smoothstep(0.62, 1.0, d);
-        // Sparkle: product of three high-frequency sines, sharpened.
-        float sp = sin(p.x * 96.0 + t * 2.1)
-                 * sin(p.y * 88.0 - t * 1.8)
-                 * sin((p.x - p.y) * 70.0 + t * 2.6);
-        col += vec3(pow(max(sp, 0.0), 16.0) * uSparkle * 0.9);
+
+        // Organic shoreline: low-frequency noise wobbles the blend so the
+        // shallow band is irregular (and drifts very slowly), not a ring.
+        float wob = fbm(vUv * 3.1 + vec2(t * 0.016, -t * 0.011));
+        float r = d + (wob - 0.5) * 0.34;
+        float shore = smoothstep(0.45, 0.98, r);
+        vec3 col = mix(uShallow, uDeep, 1.0 - shore);
+
+        // Soft low-frequency ripple normal (noise finite differences).
+        // Skipped entirely on Low quality (uDetail = 0).
+        vec3 n = vec3(0.0, 1.0, 0.0);
+        if (uDetail > 0.5) {
+          vec2 uv = vUv * 6.5;
+          vec2 drift = vec2(t * 0.030, t * 0.021);
+          float h  = fbm(uv + drift);
+          float hx = fbm(uv + vec2(0.9, 0.0) + drift);
+          float hz = fbm(uv + vec2(0.0, 0.9) + drift);
+          float amp = 0.35 + 0.45 * shore;
+          n = normalize(vec3((h - hx) * amp, 1.0, (h - hz) * amp));
+        }
+
+        // View-dependent fresnel: sky tint at grazing angles (the rim),
+        // deep tone head-on. Approximation, not a reflection probe.
+        vec3 V = normalize(cameraPosition - vWorld);
+        float fres = pow(1.0 - clamp(dot(V, n), 0.0, 1.0), 3.0);
+        col = mix(col, uSky, clamp(fres * 0.55, 0.0, 0.55));
+
+        // Faint sun glint — tight spread, no bleeds onto surroundings.
+        float spec = pow(max(dot(reflect(-uSunDir, n), V), 0.0), 90.0);
+        col += vec3(1.0, 0.96, 0.88) * spec * (0.12 + 0.28 * uDetail);
+
         // Manual distance fog (shader is not part of the scene fog pass).
         float fd = distance(cameraPosition, vWorld);
-        col = mix(col, uFogColor, smoothstep(uFogNear, uFogFar, fd));
+        float f = clamp((fd - uFogNear) / (uFogFar - uFogNear), 0.0, 1.0);
+        col = mix(col, uFogColor, f * f * (3.0 - 2.0 * f));
         gl_FragColor = vec4(col, 1.0);
       }
     `,
   });
   return {
     mat,
-    uniforms: {
-      uDeep: uniforms.uDeep,
-      uShallow: uniforms.uShallow,
-      uSparkle: uniforms.uSparkle,
-      uFogColor: uniforms.uFogColor,
-      uFogNear: uniforms.uFogNear,
-      uFogFar: uniforms.uFogFar,
-    },
+    uniforms: uniforms as MoodHooks['water'],
     timeRef: uniforms.uTime,
   };
+}
+
+/**
+ * Sparkle: a cloud of RANDOMLY placed points over the lagoon (one draw
+ * call, additive). Each point twinkles on its own phase — no lattice, so
+ * no rows or moiré at any camera distance. uDensity scales how many are
+ * alive (Low quality runs a fraction of them).
+ */
+function makeSparklePoints(
+  lagoonRadius: number,
+  shared: MoodHooks['water'],
+  timeRef: THREE.IUniform<number>,
+): THREE.Points {
+  const COUNT = 420;
+  const rng = mulberry32(20261012);
+  const pos = new Float32Array(COUNT * 3);
+  const phase = new Float32Array(COUNT);
+  const speed = new Float32Array(COUNT);
+  const rand = new Float32Array(COUNT);
+  const size = new Float32Array(COUNT);
+  for (let i = 0; i < COUNT; i += 1) {
+    const rr = lagoonRadius * 0.92 * Math.sqrt(rng());
+    const th = rng() * Math.PI * 2;
+    pos[i * 3] = Math.cos(th) * rr;
+    pos[i * 3 + 1] = 0;
+    pos[i * 3 + 2] = Math.sin(th) * rr;
+    phase[i] = rng() * Math.PI * 2;
+    speed[i] = 0.6 + rng() * 1.4;
+    rand[i] = rng();
+    size[i] = 0.8 + rng() * 1.0;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
+  geo.setAttribute('aSpeed', new THREE.BufferAttribute(speed, 1));
+  geo.setAttribute('aRand', new THREE.BufferAttribute(rand, 1));
+  geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: timeRef,
+      uSparkle: shared.uSparkle,
+      uSparkleColor: shared.uSparkleColor,
+      uDensity: shared.uDensity,
+      uRadius: { value: lagoonRadius },
+    },
+    vertexShader: /* glsl */ `
+      uniform float uTime;
+      uniform float uSparkle;
+      uniform float uDensity;
+      uniform float uRadius;
+      attribute float aPhase;
+      attribute float aSpeed;
+      attribute float aRand;
+      attribute float aSize;
+      varying float vAlpha;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        float tw = 0.5 + 0.5 * sin(uTime * aSpeed + aPhase);
+        float edge = smoothstep(1.0, 0.7, length(position.xz) / uRadius);
+        vAlpha = uSparkle * smoothstep(0.45, 0.95, tw) * edge * step(aRand, uDensity);
+        gl_PointSize = clamp(aSize * (520.0 / max(1.0, -mv.z)), 0.0, 7.0);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uSparkleColor;
+      varying float vAlpha;
+      void main() {
+        float m = smoothstep(0.5, 0.05, length(gl_PointCoord - 0.5));
+        gl_FragColor = vec4(uSparkleColor, vAlpha * m * 0.9);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const points = new THREE.Points(geo, mat);
+  points.name = 'water-sparkle';
+  points.userData.noBounds = true; // excluded from camera framing
+  return points;
 }
 
 /**
@@ -928,7 +1052,6 @@ function addLampPosts(group: THREE.Group, layout: CampusLayout): {
 export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
   const group = new THREE.Group();
   group.name = 'campus';
-  const { minX, maxX, minY, maxY } = layout.bounds;
 
   // Ground: promenade circle (when a ring exists) united with a front-yard
   // ellipse that wraps the front-of-park vertices. Non-zero fill rule makes
@@ -945,6 +1068,7 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
       frontYs.push(v.y);
     }
   }
+  let frontEll: { cx: number; cy: number; a: number; b: number } | null = null;
   if (frontXs.length >= 4) {
     const fx0 = Math.min(...frontXs);
     const fx1 = Math.max(...frontXs);
@@ -953,7 +1077,10 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     const pad = 55;
     const cx = (fx0 + fx1) / 2;
     const cy = (fy0 + fy1) / 2;
-    shape.absellipse(cx, cy, (fx1 - fx0) / 2 + pad, (fy1 - fy0) / 2 + pad, 0, Math.PI * 2, false);
+    const a = (fx1 - fx0) / 2 + pad;
+    const b = (fy1 - fy0) / 2 + pad;
+    frontEll = { cx, cy, a, b };
+    shape.absellipse(cx, cy, a, b, 0, Math.PI * 2, false);
   }
   const groundGeo = new THREE.ExtrudeGeometry(shape, { depth: 16, bevelEnabled: false, steps: 1 });
   groundGeo.rotateX(-Math.PI / 2);
@@ -974,26 +1101,121 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
   ground.receiveShadow = true;
   group.add(ground);
 
-  // A darker base platform beneath the park (architectural plinth).
-  const plinth = new THREE.Shape();
-  if (layout.ringRadius > 0) {
-    plinth.absarc(0, 0, layout.ringRadius * 1.34, 0, Math.PI * 2, false);
+  // Terrain skirt beneath the island edge: a flared funnel of soil that
+  // starts just inside the ground edge (hidden by the cliff face), darkens
+  // into a soft contact shadow right under the island, and fades to full
+  // tint at the base — no flat black disc, no hard cut-out. The skirt
+  // outline follows the SAME union contour (ring ∪ front ellipse) as the
+  // ground, so it hugs the island at every angle.
+  const skirtMat = new THREE.MeshStandardMaterial({
+    color: MOODS.twilight.groundColor,
+    vertexColors: true,
+    roughness: 1,
+    metalness: 0,
+    side: THREE.DoubleSide,
+  });
+  const skirtFadeMat = std(MOODS.twilight.fogColor, { flat: false, roughness: 1 });
+  {
+    const ringR = layout.ringRadius > 0 ? layout.ringRadius * 1.16 : 0;
+    // Farthest union-contour extent along a ray from the origin:
+    // max(circle, ellipse) via the ray–ellipse quadratic.
+    const extent = (cos: number, sin: number): number => {
+      let r = ringR;
+      if (frontEll !== null) {
+        const a2 = frontEll.a * frontEll.a;
+        const b2 = frontEll.b * frontEll.b;
+        const A = (cos * cos) / a2 + (sin * sin) / b2;
+        const B = 2 * ((-frontEll.cx * cos) / a2 + (-frontEll.cy * sin) / b2);
+        const C = (frontEll.cx * frontEll.cx) / a2 + (frontEll.cy * frontEll.cy) / b2;
+        const disc = B * B - 4 * A * C;
+        if (disc > 0) r = Math.max(r, (-B + Math.sqrt(disc)) / (2 * A));
+      }
+      return r;
+    };
+    const SEGS = 160;
+    const ROWS = 4;
+    const rowY = [0, -9, -18, -34];
+    const rowK = [0, 0.28, 0.58, 1]; // 0 = at the cliff, 1 = fully flared
+    const rowShade = [0.26, 0.52, 0.8, 1.0]; // contact shadow → soil
+    const positions = new Float32Array(SEGS * ROWS * 3);
+    const colors = new Float32Array(SEGS * ROWS * 3);
+    for (let i = 0; i < ROWS; i += 1) {
+      for (let s = 0; s < SEGS; s += 1) {
+        const th = (s / SEGS) * Math.PI * 2;
+        const cos = Math.cos(th);
+        const sin = Math.sin(th);
+        const e = extent(cos, sin);
+        const k = rowK[i]!;
+        const rad = e * (0.995 + k * (2.15 - 0.995)) + 55 * k;
+        const vi = (i * SEGS + s) * 3;
+        positions[vi] = cos * rad; // shape (x,y) → world (x, 0, -y)
+        positions[vi + 1] = rowY[i]!;
+        positions[vi + 2] = -sin * rad;
+        colors[vi] = rowShade[i]!;
+        colors[vi + 1] = rowShade[i]!;
+        colors[vi + 2] = rowShade[i]!;
+      }
+    }
+    const indices: number[] = [];
+    for (let i = 0; i < ROWS - 1; i += 1) {
+      for (let s = 0; s < SEGS; s += 1) {
+        const s2 = (s + 1) % SEGS;
+        const a = i * SEGS + s;
+        const b = i * SEGS + s2;
+        const c = (i + 1) * SEGS + s;
+        const d = (i + 1) * SEGS + s2;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+    const skirtGeo = new THREE.BufferGeometry();
+    skirtGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    skirtGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    skirtGeo.setIndex(indices);
+    skirtGeo.computeVertexNormals();
+    // Guarantee outward-facing shading regardless of winding.
+    const n0 = skirtGeo.getAttribute('normal');
+    const p0 = skirtGeo.getAttribute('position');
+    if (n0 && p0 && n0.count > 0 && p0.count > 0) {
+      const nx = n0.getX(0), nz = n0.getZ(0);
+      const px = p0.getX(0), pz = p0.getZ(0);
+      const rr = Math.hypot(px, pz);
+      if (rr > 1e-6 && (nx * px + nz * pz) / rr < 0) {
+        const flipped: number[] = [];
+        for (let i = 0; i < indices.length; i += 3) {
+          flipped.push(indices[i]!, indices[i + 2]!, indices[i + 1]!);
+        }
+        skirtGeo.setIndex(flipped);
+        skirtGeo.computeVertexNormals();
+      }
+    }
+    const skirt = new THREE.Mesh(skirtGeo, skirtMat);
+    skirt.userData.noBounds = true; // excluded from camera framing
+    group.add(skirt);
+
+    // Horizon floor: one wide disc under everything, tinted with the FOG
+    // colour so its far edge dissolves into the sky instead of showing a
+    // seam (or the old black cut-out).
+    const floorShape = new THREE.Shape();
+    const baseK = rowK[ROWS - 1]!;
+    for (let s = 0; s < SEGS; s += 1) {
+      const th = (s / SEGS) * Math.PI * 2;
+      const cos = Math.cos(th);
+      const sin = Math.sin(th);
+      const e = extent(cos, sin);
+      const rad = e * (0.995 + baseK * (2.15 - 0.995)) + 55 * baseK;
+      const x = cos * rad;
+      const y = sin * rad; // shape-plane y (world -z)
+      if (s === 0) floorShape.moveTo(x, y);
+      else floorShape.lineTo(x, y);
+    }
+    floorShape.closePath();
+    const floorGeo = new THREE.ShapeGeometry(floorShape, 8);
+    floorGeo.rotateX(-Math.PI / 2);
+    const floor = new THREE.Mesh(floorGeo, skirtFadeMat);
+    floor.position.y = rowY[ROWS - 1]! - 0.5;
+    floor.userData.noBounds = true; // excluded from camera framing
+    group.add(floor);
   }
-  plinth.absellipse(
-    (minX + maxX) / 2,
-    (minY + maxY) / 2,
-    Math.max(maxX - minX, layout.ringRadius * 2) * 0.72 + 60,
-    Math.max(maxY - minY, layout.ringRadius * 2) * 0.62 + 60,
-    0,
-    Math.PI * 2,
-    false,
-  );
-  const plinthGeo = new THREE.ShapeGeometry(plinth, 64);
-  plinthGeo.rotateX(-Math.PI / 2);
-  const plinthMesh = new THREE.Mesh(plinthGeo, std(COLORS.platform, { flat: false }));
-  plinthMesh.position.y = -16.4;
-  plinthMesh.userData.noBounds = true; // excluded from camera framing
-  group.add(plinthMesh);
 
   // Lagoon water — animated shader (ripples, fake reflection band, sparkle,
   // manual fog). Colours are mood-driven uniforms.
@@ -1008,6 +1230,10 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     const water = new THREE.Mesh(waterGeo, waterMat);
     water.position.y = 0.7;
     group.add(water);
+    // Random twinkle points just above the surface (one draw call).
+    const sparkle = makeSparklePoints(layout.lagoonRadius, uniforms, timeRef);
+    sparkle.position.y = 0.78;
+    group.add(sparkle);
   }
 
   // Walkways (one mesh per dataset edge), colour + width by class.
@@ -1171,14 +1397,27 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
         ({
           uDeep: { value: new THREE.Color() },
           uShallow: { value: new THREE.Color() },
+          uSky: { value: new THREE.Color() },
           uSparkle: { value: 0 },
+          uSparkleColor: { value: new THREE.Color() },
           uFogColor: { value: new THREE.Color() },
           uFogNear: { value: 1 },
           uFogFar: { value: 1 },
+          uDetail: { value: 1 },
+          uDensity: { value: 1 },
         } as MoodHooks['water']),
+      skirtMat,
+      skirtFadeMat,
       lampHeadMat: lamps.headMat,
       nodeMats,
       walkwayMats,
+    },
+    /** Low quality → flat water + a fraction of the sparkle points. */
+    setWaterDetail(low: boolean): void {
+      if (waterUniforms !== null) {
+        waterUniforms.uDetail.value = low ? 0 : 1;
+        waterUniforms.uDensity.value = low ? 0.4 : 1;
+      }
     },
     /** Per-frame animation: water + pennant sway. */
     tick: (t: number): void => {

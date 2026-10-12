@@ -29,7 +29,18 @@ import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { MOODS, QUALITY, type Mood, type MoodName, type QualityName } from './tokens';
 
-export const SCENE_BACKGROUND = 0x0b1220;
+/** Fallback clear colour (the sky dome overpaints it every frame). */
+export const SCENE_BACKGROUND = 0x6fa3d8;
+
+/**
+ * Direction of the "sun" for the sky-glow band and water glint. Low in the
+ * west — deliberately a *visual* constant, unrelated to the shadow-casting
+ * key light's position.
+ */
+export const SUN_DIR = new THREE.Vector3(0.55, 0.16, -0.35).normalize();
+
+/** Shared scratch for the water-sparkle colour (no per-frame allocation). */
+const SPARKLE_WHITE = new THREE.Color(0xffffff);
 
 export type TimeOfDay = 'day' | 'night';
 /** 'high' | 'balanced' | 'low' — three tiers, one knob each in the toolbar. */
@@ -59,7 +70,19 @@ export interface MoodHooks {
     uFogColor: THREE.IUniform<THREE.Color>;
     uFogNear: THREE.IUniform<number>;
     uFogFar: THREE.IUniform<number>;
+    /** Sky tint the water reflects at grazing angles. */
+    uSky: THREE.IUniform<THREE.Color>;
+    /** Sparkle point colour. */
+    uSparkleColor: THREE.IUniform<THREE.Color>;
+    /** 1 = full ripple detail, 0 = flat (Low quality). */
+    uDetail: THREE.IUniform<number>;
+    /** 0..1 fraction of sparkle points alive (cheaper on Low). */
+    uDensity: THREE.IUniform<number>;
   };
+  /** Terrain skirt below the island edge (mood-tinted soil gradient). */
+  skirtMat: THREE.MeshStandardMaterial;
+  /** Horizon floor that dissolves into the fog colour. */
+  skirtFadeMat: THREE.MeshStandardMaterial;
   /** Lamp-head material (emissive intensity = lampGlow × constant). */
   lampHeadMat: THREE.MeshStandardMaterial;
   /** Graph node materials (blueprint mode lifts their emissive). */
@@ -107,6 +130,7 @@ interface MoodState {
   lampGlow: number;
   nodeGlow: number;
   exposure: number;
+  sunGlow: number;
 }
 
 function moodStateFrom(m: Mood): MoodState {
@@ -132,6 +156,7 @@ function moodStateFrom(m: Mood): MoodState {
     lampGlow: m.lampGlow,
     nodeGlow: m.nodeGlow,
     exposure: m.exposure,
+    sunGlow: m.sunGlow,
   };
 }
 
@@ -157,6 +182,7 @@ function lerpMood(live: MoodState, dest: MoodState, k: number): void {
   live.lampGlow = THREE.MathUtils.lerp(live.lampGlow, dest.lampGlow, k);
   live.nodeGlow = THREE.MathUtils.lerp(live.nodeGlow, dest.nodeGlow, k);
   live.exposure = THREE.MathUtils.lerp(live.exposure, dest.exposure, k);
+  live.sunGlow = THREE.MathUtils.lerp(live.sunGlow, dest.sunGlow, k);
 }
 
 export class SceneManager {
@@ -198,6 +224,7 @@ export class SceneManager {
     uTop: THREE.IUniform<THREE.Color>;
     uMid: THREE.IUniform<THREE.Color>;
     uHorizon: THREE.IUniform<THREE.Color>;
+    uGlowAmount: THREE.IUniform<number>;
   };
   private readonly starMaterial: THREE.PointsMaterial;
   private readonly mood: MoodState;
@@ -208,6 +235,14 @@ export class SceneManager {
 
   // ── post-processing ────────────────────────────────────────────────────
   private composer: EffectComposer | null = null;
+
+  // ── GPU/context resilience ────────────────────────────────────────────
+  /** True while the WebGL context is lost — the loop skips rendering. */
+  private contextLost = false;
+  /** Warn once per session about unexpected render errors (no log spam). */
+  private renderErrorLogged = false;
+  /** Small "context lost / restoring" card shown over the canvas. */
+  private contextOverlay: HTMLDivElement | null = null;
 
   /** Follow-target mode: pan the camera toward a moving point each frame. */
   private followGetter: (() => THREE.Vector3 | null) | null = null;
@@ -282,15 +317,20 @@ export class SceneManager {
     this.fill.position.set(-520, 700, 640);
     this.scene.add(this.fill);
 
-    // Sky dome + stars.
-    const skyGeo = new THREE.SphereGeometry(SKY_RADIUS, 32, 18);
+    // Sky dome + stars. The gradient is computed per fragment from the view
+    // direction (smooth at any dome resolution); a soft warm glow is added
+    // around SUN_DIR so "day" reads as a real sky, not a flat backdrop.
+    const skyGeo = new THREE.SphereGeometry(SKY_RADIUS, 48, 32);
     const skyMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
       uniforms: {
-        uTop: { value: new THREE.Color(0x101a38) },
-        uMid: { value: new THREE.Color(0x38305e) },
-        uHorizon: { value: new THREE.Color(0xb46a4e) },
+        uTop: { value: new THREE.Color(0x6fa3d8) },
+        uMid: { value: new THREE.Color(0x9fc0e4) },
+        uHorizon: { value: new THREE.Color(0xf0d2ae) },
+        uSunDir: { value: SUN_DIR.clone() },
+        uGlow: { value: new THREE.Color(0xffd9a8) },
+        uGlowAmount: { value: 0.55 },
       },
       vertexShader: /* glsl */ `
         varying vec3 vWorldPos;
@@ -303,13 +343,21 @@ export class SceneManager {
         uniform vec3 uTop;
         uniform vec3 uMid;
         uniform vec3 uHorizon;
+        uniform vec3 uSunDir;
+        uniform vec3 uGlow;
+        uniform float uGlowAmount;
         varying vec3 vWorldPos;
         void main() {
-          float h = normalize(vWorldPos).y;              // -1..1, mostly 0..1
-          float horizon = smoothstep(-0.06, 0.22, h);    // 0 at ground line → 1 at 12°
-          float top = smoothstep(0.25, 0.85, h);
+          vec3 dir = normalize(vWorldPos);
+          float h = dir.y;                               // -1..1, mostly 0..1
+          float horizon = smoothstep(-0.06, 0.24, h);    // 0 at ground line → 1 at ~14°
+          float top = smoothstep(0.22, 0.8, h);
           vec3 c = mix(uHorizon, uMid, horizon);
           c = mix(c, uTop, top);
+          // Warm sun glow: broad band low on the horizon + tight core.
+          float sd = max(dot(dir, uSunDir), 0.0);
+          float glow = pow(sd, 6.0) * (1.0 - top) + pow(sd, 24.0) * 0.55;
+          c += uGlow * glow * uGlowAmount * smoothstep(-0.02, 0.05, h);
           gl_FragColor = vec4(c, 1.0);
         }
       `,
@@ -352,7 +400,47 @@ export class SceneManager {
     this.resizeObserver = new ResizeObserver(() => this.onResize());
     this.resizeObserver.observe(container);
 
+    // Robustness: a fullscreen toggle (or a pixel-ratio change from the
+    // quality button) can make the driver drop the WebGL context. Without
+    // handlers the canvas would sit black forever; with them we pause the
+    // loop, tell the user, and resume cleanly on restore.
+    const canvas = this.renderer.domElement;
+    this.onContextLostEvent = (e: Event) => {
+      e.preventDefault(); // marks the context "restore-eligible"
+      this.setContextLost(true);
+    };
+    this.onContextRestoredEvent = () => {
+      this.setContextLost(false);
+      this.onResize(); // fullscreen may have changed the container size
+    };
+    this.onFullscreenChangeEvent = () => this.onResize();
+    canvas.addEventListener('webglcontextlost', this.onContextLostEvent, false);
+    canvas.addEventListener('webglcontextrestored', this.onContextRestoredEvent);
+    document.addEventListener('fullscreenchange', this.onFullscreenChangeEvent);
+
     this.loop();
+  }
+
+  private onContextLostEvent: ((e: Event) => void) | null = null;
+  private onContextRestoredEvent: (() => void) | null = null;
+  private onFullscreenChangeEvent: (() => void) | null = null;
+
+  private setContextLost(lost: boolean): void {
+    if (this.contextLost === lost) return;
+    this.contextLost = lost;
+    if (lost) {
+      if (this.contextOverlay === null) {
+        const el = document.createElement('div');
+        el.className = 'scene-context-overlay';
+        el.setAttribute('role', 'status');
+        el.textContent = 'Graphics context lost — restoring…';
+        this.container.appendChild(el);
+        this.contextOverlay = el;
+      }
+      this.contextOverlay.hidden = false;
+    } else if (this.contextOverlay !== null) {
+      this.contextOverlay.hidden = true;
+    }
   }
 
   // ── world hooks ─────────────────────────────────────────────────────────
@@ -490,6 +578,7 @@ export class SceneManager {
       this.mood.lampGlow = fresh.lampGlow;
       this.mood.nodeGlow = fresh.nodeGlow;
       this.mood.exposure = fresh.exposure;
+      this.mood.sunGlow = fresh.sunGlow;
       this.applyMoodToScene(this.mood);
       return;
     }
@@ -521,6 +610,7 @@ export class SceneManager {
     this.skyUniforms.uTop.value.copy(m.skyTop);
     this.skyUniforms.uMid.value.copy(m.skyMid);
     this.skyUniforms.uHorizon.value.copy(m.skyHorizon);
+    this.skyUniforms.uGlowAmount.value = m.sunGlow;
 
     const hooks = this.hooksRef;
     if (hooks !== null) {
@@ -531,6 +621,12 @@ export class SceneManager {
       hooks.water.uFogColor.value.copy(m.fogColor);
       hooks.water.uFogNear.value = m.fogNear;
       hooks.water.uFogFar.value = m.fogFar;
+      // The water picks up the mid-sky tint at grazing angles, and the
+      // sparkle points a brighter cousin of the shallow tone.
+      hooks.water.uSky.value.copy(m.skyMid);
+      hooks.water.uSparkleColor.value.copy(m.waterShallow).lerp(SPARKLE_WHITE, 0.6);
+      hooks.skirtMat.color.copy(m.groundColor);
+      hooks.skirtFadeMat.color.copy(m.fogColor);
       hooks.lampHeadMat.emissiveIntensity = m.lampGlow * 2.4;
       for (const mat of hooks.nodeMats) {
         mat.emissive.setRGB(0.16 * m.nodeGlow, 0.62 * m.nodeGlow, 0.72 * m.nodeGlow);
@@ -566,6 +662,11 @@ export class SceneManager {
 
   private rebuildComposer(tier: { composer: boolean; bloom: boolean; ssao: boolean; vignette: boolean }): void {
     if (this.composer !== null) {
+      // Dispose passes first (they own their own targets), then the
+      // composer's shared render targets — no leak on quality toggles.
+      for (const pass of this.composer.passes) {
+        (pass as { dispose?: () => void }).dispose?.();
+      }
       this.composer.dispose();
       this.composer = null;
     }
@@ -607,7 +708,10 @@ export class SceneManager {
 
   private onResize(): void {
     const w = this.container.clientWidth;
-    const h = Math.max(1, this.container.clientHeight);
+    const h = this.container.clientHeight;
+    // During fullscreen transitions the container can report 0×0 for a
+    // frame; rendering at that size is what blanks the canvas. Skip it.
+    if (w < 2 || h < 2) return;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
@@ -678,10 +782,20 @@ export class SceneManager {
     this.controls.update();
     for (const fn of this.tickers) fn(dt, t);
 
-    if (this.composer !== null) {
-      this.composer.render();
-    } else {
-      this.renderer.render(this.scene, this.camera);
+    // Never render into a lost context (it would throw and leave a black
+    // canvas); an unexpected GPU error is logged once, then kept quiet.
+    if (this.contextLost) return;
+    try {
+      if (this.composer !== null) {
+        this.composer.render();
+      } else {
+        this.renderer.render(this.scene, this.camera);
+      }
+    } catch (err) {
+      if (!this.renderErrorLogged) {
+        this.renderErrorLogged = true;
+        console.warn('[scene] render error — continuing:', err);
+      }
     }
   };
 
@@ -731,6 +845,17 @@ export class SceneManager {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     this.resizeObserver.disconnect();
+    if (this.onContextLostEvent !== null) {
+      this.renderer.domElement.removeEventListener('webglcontextlost', this.onContextLostEvent);
+    }
+    if (this.onContextRestoredEvent !== null) {
+      this.renderer.domElement.removeEventListener('webglcontextrestored', this.onContextRestoredEvent);
+    }
+    if (this.onFullscreenChangeEvent !== null) {
+      document.removeEventListener('fullscreenchange', this.onFullscreenChangeEvent);
+    }
+    this.contextOverlay?.remove();
+    this.contextOverlay = null;
     this.controls.dispose();
     this.composer?.dispose();
     this.renderer.dispose();

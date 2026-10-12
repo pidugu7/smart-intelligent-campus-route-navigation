@@ -1052,6 +1052,7 @@ async function main(): Promise<void> {
   toolbar.btnQuality.addEventListener('click', () => {
     quality = QUALITY_ORDER[(QUALITY_ORDER.indexOf(quality) + 1) % QUALITY_ORDER.length]!;
     scene.setQuality(quality);
+    meshes.setWaterDetail(quality === 'low');
     syncQualityUi();
   });
   syncQualityUi();
