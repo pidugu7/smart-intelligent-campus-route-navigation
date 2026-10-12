@@ -95,16 +95,18 @@ export function buildHud(): HudRefs {
   return {
     root,
     setState(state): void {
-      if (state === 'hidden') {
+      // The route RESULT is shown exactly once — in the "Your route" sheet
+      // (Guest) or the sidebar route panel (Engineer). The floating HUD is
+      // only the live REPLAY ticker, so it is hidden whenever the replay is
+      // not actively playing/paused (including "done").
+      if (state === 'hidden' || state === 'done') {
         root.hidden = true;
         return;
       }
       root.hidden = false;
-      root.classList.toggle('done', state === 'done');
+      root.classList.remove('done');
       root.classList.toggle('paused', state === 'paused');
-      status.childNodes[1]!.textContent =
-        state === 'replaying' ? 'REPLAYING' : state === 'paused' ? 'PAUSED' : 'ROUTE FOUND';
-      if (state === 'done') summary.style.display = '';
+      status.childNodes[1]!.textContent = state === 'replaying' ? 'REPLAYING' : 'PAUSED';
     },
     setAlgorithm(label): void {
       algo.textContent = label;

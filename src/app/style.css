@@ -795,6 +795,10 @@ h1, h2, h3, .panel-title, .route-card, .hero-num, .dest-name, .gs-value {
   pointer-events: none;
 }
 .hud-slot > * { pointer-events: auto; }
+/* Guest: the slot (replay ticker + provenance badge) sits just ABOVE the
+ * bottom sheet's top edge, so it can never overlap the sheet at any
+ * viewport width. --dock-h is kept in sync by a ResizeObserver (main.ts). */
+#app[data-mode="guest"] .hud-slot { bottom: calc(var(--dock-h, 0px) + 18px); }
 
 /* The compact HUD (replaces the "Replaying…" pill). */
 .hud {
@@ -1238,18 +1242,46 @@ h1, h2, h3, .panel-title, .route-card, .hero-num, .dest-name, .gs-value {
 .sheet-head:focus-visible { outline: 2px solid var(--steel); outline-offset: -2px; border-radius: var(--r-l); }
 .sheet-grip { width: 24px; height: 4px; border-radius: 2px; background: var(--faint); opacity: 0.75; flex: none; }
 .sheet-title { flex: 1; text-align: left; }
+/* Clear, larger chevron that flips between up (collapsed) and down (open). */
 .sheet-chevron {
-  width: 9px;
-  height: 9px;
+  width: 11px;
+  height: 11px;
   flex: none;
-  border-right: 2px solid var(--muted);
-  border-bottom: 2px solid var(--muted);
+  border-right: 2.25px solid var(--muted);
+  border-bottom: 2.25px solid var(--muted);
   transform: rotate(45deg);
   transition: transform var(--dur-med) var(--ease-spring);
 }
+.sheet-head:hover .sheet-chevron { border-color: var(--text); }
 .sheet-head[aria-expanded="false"] .sheet-chevron { transform: rotate(-135deg); }
-.sheet-body { display: flex; flex-direction: column; gap: 9px; padding: 1px 12px 12px; }
-.sheet-body.collapsed { display: none; }
+/* Always-visible compact result strip (shows in the COLLAPSED state too). */
+.sheet-summary {
+  padding: 0 14px 11px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.sheet-summary[hidden] { display: none; }
+/* Spring open/close: the body animates its grid row 1fr↔0fr instead of
+ * hard display:none, so the sheet glides open and closed. */
+.sheet-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--dur-med) var(--ease-spring);
+}
+.sheet-body.collapsed { grid-template-rows: 0fr; }
+.sheet-body-inner {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 0 12px 12px;
+  transition: padding-bottom var(--dur-med) var(--ease-spring);
+}
+.sheet-body.collapsed .sheet-body-inner { padding-bottom: 0; }
 
 /* ── hero route card ──────────────────────────────────────────────────── */
 .hero-card {

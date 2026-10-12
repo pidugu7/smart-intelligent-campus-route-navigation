@@ -165,8 +165,19 @@ async function main(): Promise<void> {
   const viewport = document.createElement('main');
   viewport.className = 'viewport';
   appRoot.appendChild(viewport);
-  // Map overlays position relative to the viewport (the map area).
-  viewport.append(ui.toolbar.root, ui.dock.root, ui.hudSlot, ui.badge, ui.infoPanel);
+  // Map overlays position relative to the viewport (the map area). The
+  // provenance badge lives INSIDE hudSlot (stacked under the ticker), so
+  // it is not appended separately.
+  viewport.append(ui.toolbar.root, ui.dock.root, ui.hudSlot, ui.infoPanel);
+
+  // Keep --dock-h in sync with the sheet's live height so the bottom-left
+  // HUD slot (replay ticker + provenance badge) rides just above the
+  // sheet's top edge in Guest mode — no overlap at any width, even while
+  // the sheet's spring animation is changing its height.
+  const dockSizeObserver = new ResizeObserver(() => {
+    viewport.style.setProperty('--dock-h', `${ui.dock.root.offsetHeight}px`);
+  });
+  dockSizeObserver.observe(ui.dock.root);
 
   bootStep('map', 'active');
   await nextFrame();
@@ -190,7 +201,9 @@ async function main(): Promise<void> {
 
   // ── HUD (both modes, replaces the old "Replaying…" pill) ─────────────────
   const hud = buildHud();
-  ui.hudSlot.appendChild(hud.root);
+  // First in the slot so the (transient) replay ticker sits above the
+  // provenance badge, which stays closest to the viewport edge.
+  ui.hudSlot.insertBefore(hud.root, ui.hudSlot.firstChild);
 
   // ── timeline (shared: dock in Guest, sidebar in Engineer) ────────────────
   const timeline = buildTimeline({
@@ -672,6 +685,17 @@ async function main(): Promise<void> {
     return null;
   };
 
+  /** Compact "distance · ETA · algo" line for the sheet's always-visible
+   *  strip (stays readable even when the sheet is collapsed). */
+  const sheetSummaryLine = (r: RouteResult, algo: AlgorithmId): string => {
+    if (r.status !== 'ok') return 'No route — destination unreachable';
+    const isBfs = algo === 'bfs';
+    const meters = isBfs ? pathLengthMeters(r.path, weightOf) : r.totalDistance;
+    const walk = fmtTime(estimateWalkTime(meters).estimatedSeconds);
+    const stops = isBfs ? `${r.totalDistance} stops · ` : '';
+    return `${stops}${fmtDistance(meters)} · ≈ ${walk} walk · ${ALGO_LABEL[algo]}`;
+  };
+
   /** HUD summary line after a successful replay (both modes). */
   const finishReplayHud = (r: RouteResult): void => {
     if (r.status !== 'ok') {
@@ -960,6 +984,7 @@ async function main(): Promise<void> {
     if (sim !== undefined) result = sim.after;
     if (result === null) {
       ui.guestSummary.hidden = true;
+      ui.sheetSummary.hidden = true;
       return;
     }
     const isBfs = (sim !== undefined ? 'dijkstra' : state.algo) === 'bfs';
@@ -976,6 +1001,13 @@ async function main(): Promise<void> {
       onAlternative: () => doAlternative(),
       onBlock: () => toggleBlockTool(),
     });
+    // Always-visible compact result line (distance · ETA · algo) — shown in
+    // the collapsed sheet too, so the headline numbers never disappear.
+    ui.sheetSummary.textContent = sheetSummaryLine(
+      result,
+      sim !== undefined ? 'dijkstra' : state.algo,
+    );
+    ui.sheetSummary.hidden = false;
   };
 
   /**

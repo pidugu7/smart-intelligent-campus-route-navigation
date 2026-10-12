@@ -68,6 +68,8 @@ export interface AppControls {
   /** Bottom sheet (guest): head toggles collapse, body holds results. */
   sheetHead: HTMLButtonElement;
   sheetBody: HTMLElement;
+  /** Always-visible compact result strip (distance · ETA · algo). */
+  sheetSummary: HTMLElement;
   /** Re-parent slots for shared controls (dock vs sidebar) on mode switch. */
   slots: {
     dockRow: HTMLElement;
@@ -446,8 +448,17 @@ export function buildControls(
   sheetChevron.className = 'sheet-chevron';
   sheetChevron.setAttribute('aria-hidden', 'true');
   sheetHead.append(sheetGrip, sheetTitle, sheetChevron);
+  // Always-visible compact result strip (distance · ETA · algo) so the
+  // COLLAPSED sheet still shows the headline numbers.
+  const sheetSummary = document.createElement('div');
+  sheetSummary.className = 'sheet-summary';
+  sheetSummary.hidden = true;
   const sheetBody = document.createElement('div');
   sheetBody.className = 'sheet-body';
+  // Single inner wrapper so the collapse can animate via grid-rows 0fr↔1fr
+  // (smooth spring) instead of a hard display:none.
+  const sheetBodyInner = document.createElement('div');
+  sheetBodyInner.className = 'sheet-body-inner';
   const dockRow = document.createElement('div');
   dockRow.className = 'dock-row';
   // (btnBlock / btnCompare / btnAlternative / btnFollow / blockChip are re-parented here in Guest)
@@ -455,9 +466,10 @@ export function buildControls(
   const timelineSlot = document.createElement('div');
   timelineSlot.className = 'dock-timeline';
   // Hero card / guest summary sits at the top of the sheet body.
-  sheetBody.prepend(guestSummary);
-  sheetBody.append(dockRow, timelineSlot);
-  dock.append(sheetHead, sheetBody);
+  sheetBodyInner.prepend(guestSummary);
+  sheetBodyInner.append(dockRow, timelineSlot);
+  sheetBody.append(sheetBodyInner);
+  dock.append(sheetHead, sheetSummary, sheetBody);
   container.appendChild(dock);
 
   // ══ HUD slot (both modes, bottom-left of the map) ═══════════════════════
@@ -472,7 +484,9 @@ export function buildControls(
   badge.appendChild(document.createTextNode('Digitized from a public 2026 EPCOT map'));
   const infoButton = iconBtn('info', 'Data provenance', 'prov-info-btn');
   badge.appendChild(infoButton);
-  container.appendChild(badge);
+  // Inside the HUD slot so the badge stacks under the (replay) ticker and
+  // rides the slot's position (bottom-left; above the sheet in Guest).
+  hudSlot.appendChild(badge);
 
   const infoPanel = document.createElement('div');
   infoPanel.className = 'prov-info-panel';
@@ -521,6 +535,7 @@ export function buildControls(
     swapRow,
     sheetHead,
     sheetBody,
+    sheetSummary,
     replay: {
       readout,
       timelineSlot: (() => {
