@@ -39,6 +39,7 @@ export interface AppControls {
   // shared actions (re-parented per mode)
   btnCompare: HTMLButtonElement;
   btnAlternative: HTMLButtonElement;
+  btnFollow: HTMLButtonElement;
   btnReset: HTMLButtonElement;
   btnBlock: HTMLButtonElement;
   blockChip: HTMLElement;
@@ -57,6 +58,16 @@ export interface AppControls {
   datasetStats: HTMLElement;
   // guest
   guestSummary: HTMLElement;
+  /** Top "Where to?" pill (guest). Fields are re-parented into it. */
+  wherePill: HTMLElement;
+  /** Stable anchors for the re-parentable route fields (engineer home). */
+  fromSlot: HTMLElement;
+  toSlot: HTMLElement;
+  findSlot: HTMLElement;
+  swapRow: HTMLElement;
+  /** Bottom sheet (guest): head toggles collapse, body holds results. */
+  sheetHead: HTMLButtonElement;
+  sheetBody: HTMLElement;
   /** Re-parent slots for shared controls (dock vs sidebar) on mode switch. */
   slots: {
     dockRow: HTMLElement;
@@ -156,10 +167,21 @@ export function buildControls(
   const routeCard = document.createElement('section');
   routeCard.className = 'route-card';
 
+  // Field slots: stable anchors. In GUEST mode the fields themselves are
+  // re-parented into the top "Where to?" pill; in ENGINEER mode they live
+  // here. The slots keep the card layout intact either way.
+  const fromSlot = document.createElement('div');
+  fromSlot.className = 'field-slot';
+  const toSlot = document.createElement('div');
+  toSlot.className = 'field-slot';
+  const findSlot = document.createElement('div');
+  findSlot.className = 'field-slot';
+
   routeCard.appendChild(tag('From'));
   const fromSelect = createSearchSelect(opts.items, 'Search start location…', (id) => opts.onPick('from', id));
   fromSelect.el.dataset.which = 'from'; // tour target hook
-  routeCard.appendChild(fromSelect.el);
+  fromSlot.appendChild(fromSelect.el);
+  routeCard.appendChild(fromSlot);
 
   const swapRow = document.createElement('div');
   swapRow.className = 'swap-row';
@@ -170,7 +192,8 @@ export function buildControls(
   routeCard.appendChild(tag('To'));
   const toSelect = createSearchSelect(opts.items, 'Search destination…', (id) => opts.onPick('to', id));
   toSelect.el.dataset.which = 'to'; // tour target hook
-  routeCard.appendChild(toSelect.el);
+  toSlot.appendChild(toSelect.el);
+  routeCard.appendChild(toSlot);
 
   const algorithm = document.createElement('select');
   algorithm.className = 'select algo-select'; // hidden in Guest mode by CSS
@@ -191,7 +214,8 @@ export function buildControls(
   btnFindRoute.type = 'button';
   btnFindRoute.appendChild(icon('route', 16));
   btnFindRoute.appendChild(document.createTextNode('Find Route'));
-  routeCard.appendChild(btnFindRoute);
+  findSlot.appendChild(btnFindRoute);
+  routeCard.appendChild(findSlot);
 
   const btnDemo = document.createElement('button');
   btnDemo.className = 'btn btn-secondary btn-block btn-demo';
@@ -202,11 +226,24 @@ export function buildControls(
 
   root.appendChild(routeCard);
 
-  // ── guest summary strip (Guest mode only, filled by main.ts) ────────────
+  // ── "Where to?" pill (Guest mode, top-centre of the map) ───────────────
+  // Same controls as the sidebar route card, re-parented into a floating
+  // glass pill: From / swap / To / Find. buildControls starts in the
+  // ENGINEER arrangement; main's applyMode() moves fields into/out of
+  // the pill on every mode switch.
+  const wherePill = document.createElement('div');
+  wherePill.className = 'where-pill';
+  const whereTitle = document.createElement('span');
+  whereTitle.className = 'where-title';
+  whereTitle.textContent = 'Where to?';
+  wherePill.append(whereTitle, fromSelect.el, btnSwap, toSelect.el, btnFindRoute);
+  container.appendChild(wherePill);
+
+  // ── guest summary / hero card (Guest mode only, filled by main.ts) ──────
+  // Lives inside the bottom sheet (appended below, once the sheet exists).
   const guestSummary = document.createElement('div');
   guestSummary.className = 'guest-summary';
   guestSummary.hidden = true;
-  root.appendChild(guestSummary);
 
   // ── engineer-only stack ─────────────────────────────────────────────────
   const engineer = document.createElement('div');
@@ -263,7 +300,15 @@ export function buildControls(
   btnAlternative.className = 'btn btn-secondary';
   btnAlternative.type = 'button';
   btnAlternative.textContent = 'Find Alternative';
-  row2.append(btnCompare, btnAlternative);
+  const btnFollow = document.createElement('button');
+  btnFollow.className = 'btn btn-ghost btn-follow';
+  btnFollow.type = 'button';
+  btnFollow.appendChild(icon('follow', 16));
+  btnFollow.appendChild(document.createTextNode('Follow route'));
+  btnFollow.setAttribute('aria-pressed', 'false');
+  btnFollow.title = 'Follow the route with the camera (toggle)';
+  btnFollow.disabled = true; // enabled once a route exists
+  row2.append(btnCompare, btnAlternative, btnFollow);
   const btnReset = document.createElement('button');
   btnReset.className = 'btn btn-ghost btn-block';
   btnReset.type = 'button';
@@ -384,16 +429,35 @@ export function buildControls(
   toolbar.append(btnLabelsT, btnCameraT, btnDayNight, btnQuality, btnFullscreen);
   container.appendChild(toolbar);
 
-  // ══ Bottom dock (Guest mode) ════════════════════════════════════════════
+  // ══ Bottom sheet (Guest mode) — results + replay, collapsible ══════════
   const dock = document.createElement('div');
   dock.className = 'dock';
+  const sheetHead = document.createElement('button');
+  sheetHead.className = 'sheet-head';
+  sheetHead.type = 'button';
+  sheetHead.setAttribute('aria-expanded', 'true');
+  const sheetGrip = document.createElement('span');
+  sheetGrip.className = 'sheet-grip';
+  sheetGrip.setAttribute('aria-hidden', 'true');
+  const sheetTitle = document.createElement('span');
+  sheetTitle.className = 'sheet-title';
+  sheetTitle.textContent = 'Your route';
+  const sheetChevron = document.createElement('span');
+  sheetChevron.className = 'sheet-chevron';
+  sheetChevron.setAttribute('aria-hidden', 'true');
+  sheetHead.append(sheetGrip, sheetTitle, sheetChevron);
+  const sheetBody = document.createElement('div');
+  sheetBody.className = 'sheet-body';
   const dockRow = document.createElement('div');
   dockRow.className = 'dock-row';
-  // (btnBlock / btnCompare / btnAlternative / blockChip are re-parented here in Guest)
-  dockRow.append(btnBlock, blockChip, btnCompare, btnAlternative);
+  // (btnBlock / btnCompare / btnAlternative / btnFollow / blockChip are re-parented here in Guest)
+  dockRow.append(btnBlock, blockChip, btnCompare, btnAlternative, btnFollow);
   const timelineSlot = document.createElement('div');
   timelineSlot.className = 'dock-timeline';
-  dock.append(dockRow, timelineSlot);
+  // Hero card / guest summary sits at the top of the sheet body.
+  sheetBody.prepend(guestSummary);
+  sheetBody.append(dockRow, timelineSlot);
+  dock.append(sheetHead, sheetBody);
   container.appendChild(dock);
 
   // ══ HUD slot (both modes, bottom-left of the map) ═══════════════════════
@@ -443,12 +507,20 @@ export function buildControls(
     btnDemo,
     btnCompare,
     btnAlternative,
+    btnFollow,
     btnReset,
     btnBlock,
     blockChip,
     labelsToggle,
     btnCamera,
     btnProvenance,
+    wherePill,
+    fromSlot,
+    toSlot,
+    findSlot,
+    swapRow,
+    sheetHead,
+    sheetBody,
     replay: {
       readout,
       timelineSlot: (() => {

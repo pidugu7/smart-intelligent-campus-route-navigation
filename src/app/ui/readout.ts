@@ -394,3 +394,116 @@ export function renderProvenanceInfo(container: HTMLElement): void {
   );
   container.appendChild(card);
 }
+
+// ── hero route card (Phase 4 — one premium card for a finished route) ──────
+
+export interface HeroActions {
+  onReplay: () => void;
+  onCompare: () => void;
+  onAlternative: () => void;
+  onBlock: () => void;
+}
+
+/** rAF count-up for the big distance number (no library). */
+function countUp(node: HTMLElement, to: number, format: (v: number) => string): void {
+  const from = 0;
+  const duration = 750;
+  let start = 0;
+  const step = (now: number): void => {
+    if (start === 0) start = now;
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    node.textContent = format(from + (to - from) * eased);
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+/**
+ * THE hero route card. Shown in the Guest bottom sheet (and the Engineer
+ * Route tab). One card: big count-up distance, ETA, algorithm chip, the
+ * stop-by-stop list, and the four actions. Every figure comes from the
+ * engine result; nothing here computes a route.
+ */
+export function renderHeroRoute(
+  container: HTMLElement,
+  result: RouteResult | null,
+  algoLabel: string,
+  bfsRouteLength: number | null,
+  nameOf: (id: string) => string,
+  actions?: HeroActions,
+): void {
+  container.innerHTML = '';
+  if (result === null) return;
+
+  const card = el('div', 'hero-card');
+
+  if (result.status === 'unreachable') {
+    card.appendChild(el('div', 'hero-bad', 'No route — destination unreachable'));
+    card.appendChild(el('div', 'hero-bad-sub', 'Try a different pair, or clear a blocked walkway.'));
+    container.appendChild(card);
+    return;
+  }
+
+  const isBfs = algoLabel === 'BFS';
+  const cost = isBfs && bfsRouteLength !== null ? bfsRouteLength : result.totalDistance;
+  const walkSeconds = estimateWalkTime(cost).estimatedSeconds;
+
+  // Top row: big number + meta.
+  const top = el('div', 'hero-top');
+  const distWrap = el('div', 'hero-dist');
+  const num = el('span', 'hero-num', '0');
+  const unit = el('span', 'hero-unit', isBfs ? 'stops' : (cost < 1000 ? 'm' : 'km'));
+  distWrap.append(num, unit);
+  const meta = el('div', 'hero-meta');
+  meta.appendChild(el('div', 'hero-eta', `≈ ${fmtTime(walkSeconds)} walk`));
+  const chip = el('div', 'hero-chip');
+  chip.appendChild(el('span', 'hero-chip-algo', algoLabel));
+  chip.appendChild(el('span', 'hero-chip-sub', `${result.path.length - 1} walkways`));
+  meta.appendChild(chip);
+  top.append(distWrap, meta);
+  card.appendChild(top);
+
+  // Count-up (reduced motion → instant).
+  const reduce =
+    typeof window !== 'undefined' && window.matchMedia !== undefined
+      ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      : false;
+  if (isBfs) {
+    const target = result.totalDistance;
+    if (reduce) num.textContent = String(target);
+    else countUp(num, target, (v) => String(Math.round(v)));
+  } else {
+    const target = cost;
+    if (reduce) num.textContent = cost < 1000 ? String(Math.round(cost)) : (cost / 1000).toFixed(2);
+    else
+      countUp(num, target, (v) => (v < 1000 ? String(Math.round(v)) : (v / 1000).toFixed(2)));
+  }
+
+  // Stop-by-stop list.
+  const steps = el('ol', 'hero-steps');
+  result.path.forEach((id, i) => {
+    const li = el('li', 'hero-step', nameOf(id));
+    if (i > 0) steps.appendChild(el('li', 'hero-step-sep', '→'));
+    steps.appendChild(li);
+  });
+  card.appendChild(steps);
+
+  // Actions.
+  if (actions !== undefined) {
+    const bar = el('div', 'hero-actions');
+    const mk = (label: string, fn: () => void, cls = 'btn btn-ghost btn-sm'): void => {
+      const b = el('button', cls, label);
+      b.type = 'button';
+      b.addEventListener('click', fn);
+      bar.appendChild(b);
+    };
+    mk('Replay', actions.onReplay);
+    mk('Compare', actions.onCompare);
+    mk('Find Alternative', actions.onAlternative);
+    mk('Block Path', actions.onBlock, 'btn btn-ghost btn-sm');
+    card.appendChild(bar);
+  }
+
+  container.appendChild(card);
+}

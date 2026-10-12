@@ -43,6 +43,8 @@ const FLASH_MS = 260;
 
 /** Scratch vector reused by per-frame path walking (no per-frame alloc). */
 const PULSE_DIR_TMP = new THREE.Vector3();
+/** Scratch for the trail particles (kept separate from PULSE_DIR_TMP). */
+const TRAIL_TMP = new THREE.Vector3();
 
 interface FlashEntry {
   mesh: THREE.Mesh;
@@ -101,6 +103,63 @@ export interface ShowRouteOptions {
   radius?: number;
   /** Directional chevrons flowing along the route (primary route only). */
   chevrons?: boolean;
+  /**
+   * Self-drawing glowing reveal: the ribbon draws itself start→destination
+   * with a bright comet head + particle trail, then a "traveler orb" loops
+   * the route forever (the orb doubles as the follow-camera target).
+   * Primary route only.
+   */
+  reveal?: boolean;
+  /** Animate the draw-on (pass false under prefers-reduced-motion). */
+  animate?: boolean;
+}
+
+const TRAIL_COUNT = 30;
+const TRAIL_SPACING = 2.8; // metres between trail particles
+const DRAW_SPEED = 240; // m/s of draw-on → 874 m ≈ 3.6 s
+const TRAVEL_LAP_SECONDS = 26; // one full loop of the traveler orb
+
+/** Canvas radial glow — shared by the comet head and the traveler orb. */
+let glowTextureCache: THREE.CanvasTexture | null = null;
+function glowTexture(): THREE.CanvasTexture {
+  if (glowTextureCache !== null) return glowTextureCache;
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const g = ctx.createRadialGradient(size / 2, size / 2, 2, size / 2, size / 2, size / 2);
+  g.addColorStop(0, 'rgba(255, 255, 255, 1)');
+  g.addColorStop(0.25, 'rgba(255, 244, 214, 0.55)');
+  g.addColorStop(0.6, 'rgba(255, 214, 130, 0.16)');
+  g.addColorStop(1, 'rgba(255, 200, 100, 0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  glowTextureCache = new THREE.CanvasTexture(canvas);
+  return glowTextureCache;
+}
+
+/**
+ * Self-drawing route reveal + comet head + particle trail + looping
+ * traveler orb. One instance per primary route; disposed with clearRoutes.
+ */
+interface RevealState {
+  mat: THREE.ShaderMaterial;
+  path: THREE.Vector3[];
+  segLengths: number[];
+  total: number;
+  /** 0..1 linear draw progress (eased when applied to the shader). */
+  drawProgress: number;
+  drawDuration: number;
+  traveling: boolean;
+  loopDist: number;
+  trailFade: number; // 0..1 (fades the trail out when the reveal is cleared)
+  head: THREE.Vector3;
+  headMesh: THREE.Mesh;
+  glow: THREE.Sprite;
+  trail: THREE.Points;
+  trailMat: THREE.ShaderMaterial;
+  light: THREE.PointLight;
 }
 
 export class RouteLayer {
@@ -111,7 +170,10 @@ export class RouteLayer {
   private readonly blockedMarkers = new Map<string, THREE.Group>();
   /** Directional chevrons of the current primary route. */
   private chevrons: { group: THREE.Group; path: THREE.Vector3[]; segLengths: number[]; total: number; offsets: number[] } | null = null;
+  /** Self-drawing reveal + traveler orb of the current primary route. */
+  private reveal: RevealState | null = null;
   private now = 0;
+  private prevNow = 0;
 
   private startMarker: THREE.Group | null = null;
   private targetMarker: THREE.Group | null = null;
@@ -218,7 +280,7 @@ export class RouteLayer {
   /** Show one route as a tube; options control pulse / width / chevrons. */
   showRoute(path: readonly string[], color: number, opts: ShowRouteOptions = {}): THREE.Mesh | null {
     if (path.length < 2) return null;
-    const { pulse = false, radius = PRIMARY_ROUTE_RADIUS, chevrons = false } = opts;
+    const { pulse = false, radius = PRIMARY_ROUTE_RADIUS, chevrons = false, reveal = false, animate = true } = opts;
     const pts: THREE.Vector3[] = path.map((id) => this.meshes.worldPos(id).add(new THREE.Vector3(0, 7, 0)));
     const curve = new THREE.CurvePath<THREE.Vector3>();
     for (let i = 0; i + 1 < pts.length; i += 1) {
@@ -266,7 +328,172 @@ export class RouteLayer {
       this.group.add(group);
       this.chevrons = { group, path: [...pts], segLengths: [...segLengths], total, offsets };
     }
+
+    if (reveal) {
+      this.clearReveal();
+      const rev = this.buildReveal(pts, segLengths, total, color, animate);
+      this.reveal = rev;
+    }
     return tube;
+  }
+
+  // ── self-drawing reveal + traveler orb ───────────────────────────────────
+
+  private buildReveal(
+    pts: THREE.Vector3[],
+    segLengths: number[],
+    total: number,
+    color: number,
+    animate: boolean,
+  ): RevealState {
+    // Glowing reveal tube: a slightly fatter additive ribbon whose shader
+    // reveals arc-length uv.x up to uProgress (the "draw-on").
+    const curve = new THREE.CurvePath<THREE.Vector3>();
+    for (let i = 0; i + 1 < pts.length; i += 1) {
+      curve.add(new THREE.LineCurve3(pts[i]!, pts[i + 1]!));
+    }
+    const revGeo = new THREE.TubeGeometry(curve, Math.max(8, (pts.length - 1) * 4), PRIMARY_ROUTE_RADIUS + 0.8, 10, false);
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uProgress: { value: animate ? 0 : 1 },
+        uColor: { value: new THREE.Color(color) },
+        uTime: { value: 0 },
+      },
+      vertexShader: /* glsl */ `
+        varying float vT;
+        void main() {
+          vT = uv.x; // arc-length fraction along the tube (0..1)
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform float uProgress;
+        uniform vec3 uColor;
+        uniform float uTime;
+        varying float vT;
+        void main() {
+          float front = uProgress;
+          // Ribbon body behind the head.
+          float body = 1.0 - smoothstep(front - 0.20, front, vT);
+          // Bright comet band at the draw head.
+          float head = exp(-abs(vT - front) * 42.0);
+          // Gentle shimmer sweep once the full route is drawn.
+          float shimmer = step(1.0, front) * 0.16 * (0.5 + 0.5 * sin(uTime * 1.5 - vT * 26.0));
+          float a = clamp(body * 0.5 + head * 0.85 + shimmer, 0.0, 1.0);
+          vec3 col = uColor * (0.75 + head * 1.7 + shimmer * 0.9);
+          gl_FragColor = vec4(col, a);
+        }
+      `,
+    });
+    const revTube = new THREE.Mesh(revGeo, mat);
+    revTube.name = 'route-reveal';
+    revTube.renderOrder = 3;
+    this.group.add(revTube);
+
+    // Comet head → becomes the looping traveler orb.
+    const head = new THREE.Vector3().copy(pts[0]!);
+    const headMesh = new THREE.Mesh(new THREE.SphereGeometry(4.6, 18, 12), new THREE.MeshBasicMaterial({ color: 0xfff3d0 }));
+    headMesh.name = 'route-head';
+    this.group.add(headMesh);
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color, transparent: true, opacity: 0.95, depthWrite: false, blending: THREE.AdditiveBlending }));
+    glow.scale.set(30, 30, 1);
+    glow.name = 'route-glow';
+    this.group.add(glow);
+
+    // Soft warm point light so the orb lights the walkway beneath it.
+    const light = new THREE.PointLight(color, 30, 150, 2);
+    light.name = 'route-light';
+    this.group.add(light);
+
+    // Particle trail (additive points, per-particle fade attribute).
+    const positions = new Float32Array(TRAIL_COUNT * 3);
+    const fades = new Float32Array(TRAIL_COUNT);
+    for (let i = 0; i < TRAIL_COUNT; i += 1) {
+      fades[i] = Math.pow(1 - i / TRAIL_COUNT, 1.6);
+    }
+    const trailGeo = new THREE.BufferGeometry();
+    trailGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    trailGeo.setAttribute('aFade', new THREE.BufferAttribute(fades, 1));
+    const trailMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uColor: { value: new THREE.Color(0xffe2a8) },
+        uOpacity: { value: animate ? 1 : 0 },
+      },
+      vertexShader: /* glsl */ `
+        attribute float aFade;
+        varying float vFade;
+        void main() {
+          vFade = aFade;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = 26.0 * (240.0 / max(1.0, -mv.z));
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 uColor;
+        uniform float uOpacity;
+        varying float vFade;
+        void main() {
+          float d = length(gl_PointCoord - 0.5);
+          float a = smoothstep(0.5, 0.04, d) * vFade * uOpacity;
+          if (a < 0.012) discard;
+          gl_FragColor = vec4(uColor, a);
+        }
+      `,
+    });
+    const trail = new THREE.Points(trailGeo, trailMat);
+    trail.name = 'route-trail';
+    trail.renderOrder = 4;
+    this.group.add(trail);
+
+    const drawDuration = THREE.MathUtils.clamp(total / DRAW_SPEED, 1.0, 3.6);
+    return {
+      mat,
+      path: [...pts],
+      segLengths: [...segLengths],
+      total,
+      drawProgress: animate ? 0 : 1,
+      drawDuration,
+      traveling: !animate,
+      loopDist: 0,
+      trailFade: 0,
+      head,
+      headMesh,
+      glow,
+      trail,
+      trailMat,
+      light,
+    };
+  }
+
+  /** Current orb position (stable vector; caller must not mutate). */
+  orbPosition(): THREE.Vector3 | null {
+    return this.reveal !== null ? this.reveal.head : null;
+  }
+
+  private clearReveal(): void {
+    if (this.reveal === null) return;
+    const r = this.reveal;
+    disposeObject(r.headMesh);
+    this.group.remove(r.headMesh);
+    r.glow.material.dispose(); // shared glow texture stays cached
+    this.group.remove(r.glow);
+    this.group.remove(r.light);
+    r.trail.geometry.dispose();
+    r.trailMat.dispose();
+    this.group.remove(r.trail);
+    const revTube = this.group.getObjectByName('route-reveal');
+    if (revTube !== null && revTube !== undefined) {
+      disposeObject(revTube);
+      this.group.remove(revTube);
+    }
+    this.reveal = null;
   }
 
   private clearChevrons(): void {
@@ -405,6 +632,7 @@ export class RouteLayer {
     }
     this.pulses.length = 0;
     this.clearChevrons();
+    this.clearReveal();
     this.clearEmphasis();
   }
 
@@ -422,9 +650,11 @@ export class RouteLayer {
 
   // ── animation ────────────────────────────────────────────────────────────
 
-  /** Advance pulses, chevrons, destination beacon and edge flashes.
-   *  Call once per frame with absolute ms. */
+  /** Advance pulses, chevrons, destination beacon, edge flashes and the
+   *  self-drawing reveal / traveler orb. Call once per frame with ms. */
   tick(nowMs: number): void {
+    const dt = this.prevNow === 0 ? 0 : Math.min(0.1, (nowMs - this.prevNow) / 1000);
+    this.prevNow = nowMs;
     this.now = nowMs;
     for (let i = this.flashes.length - 1; i >= 0; i -= 1) {
       const f = this.flashes[i]!;
@@ -464,6 +694,51 @@ export class RouteLayer {
         (ring.material as THREE.MeshBasicMaterial).opacity = 0.5 * (1 - phase);
       }
     }
+
+    // Self-drawing reveal + traveler orb.
+    if (this.reveal !== null) {
+      this.advanceReveal(this.reveal, dt, nowMs / 1000);
+    }
+  }
+
+  private advanceReveal(r: RevealState, dt: number, tSec: number): void {
+    const uniforms = r.mat.uniforms;
+    if (uniforms.uTime !== undefined) (uniforms.uTime.value as number) += dt;
+
+    let headDist: number;
+    if (r.traveling) {
+      r.loopDist = (r.loopDist + (r.total / TRAVEL_LAP_SECONDS) * dt) % r.total;
+      headDist = r.loopDist;
+      // The shader shows the full ribbon with a travelling shimmer.
+      if (uniforms.uProgress !== undefined) (uniforms.uProgress.value as number) = 1;
+    } else {
+      r.drawProgress = Math.min(1, r.drawProgress + dt / r.drawDuration);
+      // Ease the draw for a smooth "magic" reveal.
+      const p = r.drawProgress;
+      const eased = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+      if (uniforms.uProgress !== undefined) (uniforms.uProgress.value as number) = eased;
+      headDist = eased * r.total;
+      if (r.drawProgress >= 1) r.traveling = true;
+    }
+
+    // Orb position (with a gentle bob) + glow + light.
+    placeAlongPath(r.path, r.segLengths, headDist, r.head);
+    r.head.y += Math.sin(tSec * 2.2) * 0.7;
+    r.headMesh.position.copy(r.head);
+    r.glow.position.copy(r.head);
+    r.light.position.copy(r.head);
+
+    // Particle trail: spaced particles just behind the orb along the path.
+    const posAttr = r.trail.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const arr = posAttr.array as Float32Array;
+    for (let i = 0; i < TRAIL_COUNT; i += 1) {
+      const d = Math.max(0, headDist - (i + 1) * TRAIL_SPACING);
+      placeAlongPath(r.path, r.segLengths, d, TRAIL_TMP);
+      arr[i * 3] = TRAIL_TMP.x;
+      arr[i * 3 + 1] = TRAIL_TMP.y;
+      arr[i * 3 + 2] = TRAIL_TMP.z;
+    }
+    posAttr.needsUpdate = true;
   }
 }
 

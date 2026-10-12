@@ -1,84 +1,162 @@
 /**
  * viz/scene.ts
  *
- * SceneManager — renderer, perspective camera, OrbitControls, lights and the
- * render loop. Everything else (campus meshes, route layer) is added to
- * `this.scene` by its owner; the manager also provides:
- *   - frameAll()    fit the camera to the current scene bounds (initial view / reset)
- *   - focusOn()     smooth camera tween onto a selected location
- *   - tick-driven per-frame updates (label scaling, route pulse, tweening)
+ * SceneManager — renderer, camera, OrbitControls, atmosphere and the render
+ * loop. Phase 7 additions:
+ *   - gradient sky dome + star field (uniform-driven, mood-animated)
+ *   - IBL via RoomEnvironment (PBR ambience, no external HDR files)
+ *   - key (warm, shadow-casting) + fill (cool) + hemisphere lights
+ *   - post-processing chain: SSAO (high) → UnrealBloom → Vignette → Output,
+ *     all toggleable via the 3-tier quality setting
+ *   - animated MOOD system: the scene tweens between "twilight", "night"
+ *     and "blueprint" (the Guest ↔ Engineer transition)
+ *   - cinematic intro fly-in and a "follow target" camera mode
+ *
+ * Everything else (campus meshes, route layer) is added to `this.scene` by
+ * its owner. The mood system reaches into the world only through
+ * `MoodHooks` registered by the world builder — no logic lives here.
  */
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { SSAOPass } from 'three/addons/postprocessing/SSAOPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { MOODS, QUALITY, type Mood, type MoodName, type QualityName } from './tokens';
 
 export const SCENE_BACKGROUND = 0x0b1220;
 
 export type TimeOfDay = 'day' | 'night';
-export type RenderQuality = 'high' | 'low';
+/** 'high' | 'balanced' | 'low' — three tiers, one knob each in the toolbar. */
+export type RenderQuality = QualityName;
 
-const INITIAL_DIRECTION = new THREE.Vector3(0.38, 0.74, 0.64).normalize(); // lower 3/4 aerial — park reads as a landscape, not a top-down map
+const INITIAL_DIRECTION = new THREE.Vector3(0.38, 0.74, 0.64).normalize();
 const UP = new THREE.Vector3(0, 1, 0);
 const FOCUS_DISTANCE = 240;
 const TWEEN_SECONDS = 0.9;
+const MOOD_TWEEN_SECONDS = 0.85;
+
+const SKY_RADIUS = 7000;
+const STAR_COUNT = 650;
 
 /**
- * Lighting / atmosphere presets. 'day' is the calibrated Phase 4 look
- * (kept as the default so the tuned palette never shifts); 'night' is a
- * darker, cooler mood. Both keep the same light RIG — only intensities,
- * colours, sky and fog change.
+ * Material/uniform slots the mood system may re-tint per frame. The world
+ * builder (campus-mesh.ts) registers its instances once after construction.
  */
-const TIME_PRESETS: Record<
-  TimeOfDay,
-  {
-    background: number;
-    fogNear: number;
-    fogFar: number;
-    hemiSky: number;
-    hemiGround: number;
-    hemiIntensity: number;
-    sunColor: number;
-    sunIntensity: number;
-  }
-> = {
-  day: {
-    background: 0x0b1220,
-    fogNear: 2600,
-    fogFar: 6500,
-    hemiSky: 0xbfd9ff,
-    hemiGround: 0x1c2536,
-    hemiIntensity: 1.05,
-    sunColor: 0xfff2df,
-    sunIntensity: 1.6,
-  },
-  night: {
-    background: 0x070c16,
-    fogNear: 2200,
-    fogFar: 6000,
-    hemiSky: 0x8fb0e4,
-    hemiGround: 0x0d1320,
-    hemiIntensity: 0.75,
-    sunColor: 0xbcd0f0,
-    sunIntensity: 0.55,
-  },
-};
-
-function easeInOutCubic(t: number): number {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+export interface MoodHooks {
+  /** Ground top material (coloured over a gradient texture). */
+  groundMat: THREE.MeshStandardMaterial;
+  /** Lagoon shader uniforms. */
+  water: {
+    uDeep: THREE.IUniform<THREE.Color>;
+    uShallow: THREE.IUniform<THREE.Color>;
+    uSparkle: THREE.IUniform<number>;
+    uFogColor: THREE.IUniform<THREE.Color>;
+    uFogNear: THREE.IUniform<number>;
+    uFogFar: THREE.IUniform<number>;
+  };
+  /** Lamp-head material (emissive intensity = lampGlow × constant). */
+  lampHeadMat: THREE.MeshStandardMaterial;
+  /** Graph node materials (blueprint mode lifts their emissive). */
+  nodeMats: THREE.MeshStandardMaterial[];
+  /** Walkway materials (blueprint mode gives them a faint holographic lift). */
+  walkwayMats: THREE.MeshStandardMaterial[];
 }
 
 interface FlightKeyframe {
   pos: THREE.Vector3;
   tgt: THREE.Vector3;
-  /** Cumulative path length at this keyframe (for constant-speed timing). */
   dist: number;
 }
 
 export interface FlightOptions {
-  /** Total flight duration in seconds (clamped to a calm range). */
   duration?: number;
-  /** Fired once when the flight completes (not when it is cancelled). */
   onDone?: () => void;
+}
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+// ── mood state (preallocated; lerp'd per frame during the tween) ───────────
+
+interface MoodState {
+  skyTop: THREE.Color;
+  skyMid: THREE.Color;
+  skyHorizon: THREE.Color;
+  fogColor: THREE.Color;
+  fogNear: number;
+  fogFar: number;
+  hemiSky: THREE.Color;
+  hemiGround: THREE.Color;
+  hemiIntensity: number;
+  keyColor: THREE.Color;
+  keyIntensity: number;
+  fillColor: THREE.Color;
+  fillIntensity: number;
+  waterDeep: THREE.Color;
+  waterShallow: THREE.Color;
+  waterSparkle: number;
+  groundColor: THREE.Color;
+  stars: number;
+  lampGlow: number;
+  nodeGlow: number;
+  exposure: number;
+}
+
+function moodStateFrom(m: Mood): MoodState {
+  return {
+    skyTop: new THREE.Color(m.skyTop),
+    skyMid: new THREE.Color(m.skyMid),
+    skyHorizon: new THREE.Color(m.skyHorizon),
+    fogColor: new THREE.Color(m.fogColor),
+    fogNear: m.fogNear,
+    fogFar: m.fogFar,
+    hemiSky: new THREE.Color(m.hemiSky),
+    hemiGround: new THREE.Color(m.hemiGround),
+    hemiIntensity: m.hemiIntensity,
+    keyColor: new THREE.Color(m.keyColor),
+    keyIntensity: m.keyIntensity,
+    fillColor: new THREE.Color(m.fillColor),
+    fillIntensity: m.fillIntensity,
+    waterDeep: new THREE.Color(m.waterDeep),
+    waterShallow: new THREE.Color(m.waterShallow),
+    waterSparkle: m.waterSparkle,
+    groundColor: new THREE.Color(m.groundColor),
+    stars: m.stars,
+    lampGlow: m.lampGlow,
+    nodeGlow: m.nodeGlow,
+    exposure: m.exposure,
+  };
+}
+
+function lerpMood(live: MoodState, dest: MoodState, k: number): void {
+  live.skyTop.lerp(dest.skyTop, k);
+  live.skyMid.lerp(dest.skyMid, k);
+  live.skyHorizon.lerp(dest.skyHorizon, k);
+  live.fogColor.lerp(dest.fogColor, k);
+  live.fogNear = THREE.MathUtils.lerp(live.fogNear, dest.fogNear, k);
+  live.fogFar = THREE.MathUtils.lerp(live.fogFar, dest.fogFar, k);
+  live.hemiSky.lerp(dest.hemiSky, k);
+  live.hemiGround.lerp(dest.hemiGround, k);
+  live.hemiIntensity = THREE.MathUtils.lerp(live.hemiIntensity, dest.hemiIntensity, k);
+  live.keyColor.lerp(dest.keyColor, k);
+  live.keyIntensity = THREE.MathUtils.lerp(live.keyIntensity, dest.keyIntensity, k);
+  live.fillColor.lerp(dest.fillColor, k);
+  live.fillIntensity = THREE.MathUtils.lerp(live.fillIntensity, dest.fillIntensity, k);
+  live.waterDeep.lerp(dest.waterDeep, k);
+  live.waterShallow.lerp(dest.waterShallow, k);
+  live.waterSparkle = THREE.MathUtils.lerp(live.waterSparkle, dest.waterSparkle, k);
+  live.groundColor.lerp(dest.groundColor, k);
+  live.stars = THREE.MathUtils.lerp(live.stars, dest.stars, k);
+  live.lampGlow = THREE.MathUtils.lerp(live.lampGlow, dest.lampGlow, k);
+  live.nodeGlow = THREE.MathUtils.lerp(live.nodeGlow, dest.nodeGlow, k);
+  live.exposure = THREE.MathUtils.lerp(live.exposure, dest.exposure, k);
 }
 
 export class SceneManager {
@@ -93,7 +171,6 @@ export class SceneManager {
   private raf = 0;
   private disposed = false;
 
-  /** Per-frame subscribers: called with delta seconds. */
   private readonly tickers = new Set<(dt: number, t: number) => void>();
 
   private tween: {
@@ -102,17 +179,9 @@ export class SceneManager {
     fromTarget: THREE.Vector3;
     toTarget: THREE.Vector3;
     elapsed: number;
+    duration: number;
   } | null = null;
 
-  private readonly hemi: THREE.HemisphereLight;
-  private readonly sun: THREE.DirectionalLight;
-  private currentTime: TimeOfDay = 'day';
-
-  get timeOfDay(): TimeOfDay {
-    return this.currentTime;
-  }
-
-  /** Cinematic route flight (cancel by user orbiting). */
   private flight: {
     keys: FlightKeyframe[];
     totalDist: number;
@@ -121,47 +190,84 @@ export class SceneManager {
     onDone?: () => void;
   } | null = null;
 
+  // ── atmosphere ─────────────────────────────────────────────────────────
+  private readonly hemi: THREE.HemisphereLight;
+  private readonly sun: THREE.DirectionalLight;
+  private readonly fill: THREE.DirectionalLight;
+  private readonly skyUniforms: {
+    uTop: THREE.IUniform<THREE.Color>;
+    uMid: THREE.IUniform<THREE.Color>;
+    uHorizon: THREE.IUniform<THREE.Color>;
+  };
+  private readonly starMaterial: THREE.PointsMaterial;
+  private readonly mood: MoodState;
+  private moodDest: MoodState | null = null;
+  private moodProgress = 1; // 1 = settled
+  private moodName: MoodName = 'twilight';
+  private hooksRef: MoodHooks | null = null;
+
+  // ── post-processing ────────────────────────────────────────────────────
+  private composer: EffectComposer | null = null;
+
+  /** Follow-target mode: pan the camera toward a moving point each frame. */
+  private followGetter: (() => THREE.Vector3 | null) | null = null;
+  onFollowCancelled: (() => void) | null = null;
+
+  get timeOfDay(): TimeOfDay {
+    return this.moodName === 'night' ? 'night' : 'day';
+  }
+  get moodNameNow(): MoodName {
+    return this.moodName;
+  }
+
   constructor(container: HTMLElement) {
     this.container = container;
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, QUALITY.high.dprCap));
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.domElement.style.display = 'block';
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(SCENE_BACKGROUND);
-    this.scene.fog = new THREE.Fog(SCENE_BACKGROUND, 2600, 6500);
+    this.scene.fog = new THREE.Fog(0x232a4a, 2200, 6800);
+
+    // IBL: a small procedural room environment gives PBR surfaces soft
+    // ambience without downloading any HDR file.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+    this.scene.environmentIntensity = 0.35;
 
     const aspect = container.clientWidth / Math.max(1, container.clientHeight);
-    this.camera = new THREE.PerspectiveCamera(50, aspect, 1, 20000);
+    this.camera = new THREE.PerspectiveCamera(50, aspect, 1, 24000);
     this.camera.position.set(0, 400, 1500);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-    this.controls.maxPolarAngle = Math.PI * 0.485; // stay above the ground
+    this.controls.maxPolarAngle = Math.PI * 0.485;
     this.controls.minDistance = 70;
-    // Zoom-out cap: the park spans ~1500 m, so 2400 m is already a wide
-    // overview — this keeps the park filling the viewport (no empty sky).
     this.controls.maxDistance = 2400;
     this.controls.target.set(0, 0, 0);
-    // User input cancels any running camera tween or cinematic flight
-    // (no fighting the camera).
     this.controls.addEventListener('start', () => {
       this.tween = null;
-      if (this.flight !== null) {
-        this.flight = null; // cancelled — onDone intentionally not fired
+      if (this.flight !== null) this.flight = null; // user takes over
+      if (this.followGetter !== null) {
+        this.followGetter = null; // follow ends on user input
+        this.onFollowCancelled?.();
       }
     });
 
-    // Lights: soft ambient hemisphere + one shadow-casting sun.
-    this.hemi = new THREE.HemisphereLight(0xbfd9ff, 0x1c2536, 1.05);
+    // Lights: hemisphere ambient + warm shadow-casting key + cool fill.
+    this.hemi = new THREE.HemisphereLight(0x8ea0d0, 0x2a2030, 0.95);
     this.scene.add(this.hemi);
-    this.sun = new THREE.DirectionalLight(0xfff2df, 1.6);
+    this.sun = new THREE.DirectionalLight(0xffcf9e, 1.55);
     this.sun.position.set(650, 1100, -420);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
@@ -172,6 +278,76 @@ export class SceneManager {
     this.sun.shadow.camera.far = 4000;
     this.sun.shadow.bias = -0.0004;
     this.scene.add(this.sun);
+    this.fill = new THREE.DirectionalLight(0x4a6a9e, 0.55);
+    this.fill.position.set(-520, 700, 640);
+    this.scene.add(this.fill);
+
+    // Sky dome + stars.
+    const skyGeo = new THREE.SphereGeometry(SKY_RADIUS, 32, 18);
+    const skyMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      uniforms: {
+        uTop: { value: new THREE.Color(0x101a38) },
+        uMid: { value: new THREE.Color(0x38305e) },
+        uHorizon: { value: new THREE.Color(0xb46a4e) },
+      },
+      vertexShader: /* glsl */ `
+        varying vec3 vWorldPos;
+        void main() {
+          vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 uTop;
+        uniform vec3 uMid;
+        uniform vec3 uHorizon;
+        varying vec3 vWorldPos;
+        void main() {
+          float h = normalize(vWorldPos).y;              // -1..1, mostly 0..1
+          float horizon = smoothstep(-0.06, 0.22, h);    // 0 at ground line → 1 at 12°
+          float top = smoothstep(0.25, 0.85, h);
+          vec3 c = mix(uHorizon, uMid, horizon);
+          c = mix(c, uTop, top);
+          gl_FragColor = vec4(c, 1.0);
+        }
+      `,
+    });
+    this.skyUniforms = skyMat.uniforms as typeof this.skyUniforms;
+    const sky = new THREE.Mesh(skyGeo, skyMat);
+    sky.name = 'sky';
+    this.scene.add(sky);
+
+    // Star field (opacity driven by the mood).
+    const starPos = new Float32Array(STAR_COUNT * 3);
+    let s = 0;
+    for (let i = 0; i < STAR_COUNT; i += 1) {
+      // Uniform-ish on the upper hemisphere.
+      const az = Math.random() * Math.PI * 2;
+      const el = Math.random() * Math.PI * 0.46 + 0.04;
+      const r = SKY_RADIUS * 0.92;
+      starPos[s++] = Math.cos(az) * Math.cos(el) * r;
+      starPos[s++] = Math.sin(el) * r;
+      starPos[s++] = Math.sin(az) * Math.cos(el) * r;
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    this.starMaterial = new THREE.PointsMaterial({
+      color: 0xdde6ff,
+      size: 2.1,
+      sizeAttenuation: false,
+      transparent: true,
+      opacity: 0.18,
+      depthWrite: false,
+    });
+    const stars = new THREE.Points(starGeo, this.starMaterial);
+    stars.name = 'stars';
+    this.scene.add(stars);
+
+    // Mood state starts at the guest default (twilight).
+    this.mood = moodStateFrom(MOODS.twilight);
+    this.applyMoodToScene(this.mood);
 
     this.resizeObserver = new ResizeObserver(() => this.onResize());
     this.resizeObserver.observe(container);
@@ -179,24 +355,26 @@ export class SceneManager {
     this.loop();
   }
 
-  /** Register a per-frame callback (label scaling, pulses, …). */
+  // ── world hooks ─────────────────────────────────────────────────────────
+
+  /** Register the world's tintable material slots (called once by main). */
+  attachMoodHooks(hooks: MoodHooks): void {
+    this.hooksRef = hooks;
+    this.applyMoodToScene(this.mood);
+  }
+
+  // ── API ─────────────────────────────────────────────────────────────────
+
   onTick(fn: (dt: number, t: number) => void): () => void {
     this.tickers.add(fn);
     return () => this.tickers.delete(fn);
   }
 
-  /**
-   * Fit the camera so the whole bounding box is visible from the canonical
-   * 3/4 aerial direction. Uses an exact box→frustum fit (project every box
-   * corner into the view and solve for the distance at which all corners
-   * land inside the frustum) — tight for elongated layouts like a teardrop
-   * park, and generic for any dataset's bounds.
-   */
   frameAll(box: THREE.Box3, animate = false): void {
     const center = box.getCenter(new THREE.Vector3());
     const half = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
 
-    const fwd = INITIAL_DIRECTION.clone().negate(); // camera → target
+    const fwd = INITIAL_DIRECTION.clone().negate();
     const right = new THREE.Vector3().crossVectors(fwd, UP).normalize();
     const up = new THREE.Vector3().crossVectors(right, fwd).normalize();
 
@@ -212,30 +390,29 @@ export class SceneManager {
             center.y + sy * half.y,
             center.z + sz * half.z,
           ).sub(center);
-          const z = Math.max(1, corner.dot(fwd)); // depth of the corner beyond the center
+          const z = Math.max(1, corner.dot(fwd));
           const x = Math.abs(corner.dot(right));
           const y = Math.abs(corner.dot(up));
-          // At camera distance D the corner sits at depth D + z:
           distance = Math.max(distance, x / tanH - z, y / tanV - z);
         }
       }
     }
-    distance *= 1.03; // tight framing: the park fills the viewport (Phase 6)
+    distance *= 1.03;
 
     const toPos = center.clone().addScaledVector(INITIAL_DIRECTION, distance);
+    const toTgt = center.clone();
     if (animate) {
-      this.startTween(toPos, center);
+      this.startTween(toPos, toTgt, TWEEN_SECONDS);
     } else {
       this.camera.position.copy(toPos);
-      this.controls.target.copy(center);
+      this.controls.target.copy(toTgt);
       this.camera.near = Math.max(1, distance / 100);
-      this.camera.far = distance * 8;
+      this.camera.far = Math.max(20000, distance * 8);
       this.camera.updateProjectionMatrix();
       this.controls.update();
     }
   }
 
-  /** Smoothly move the camera to look at a world position from the current viewing direction. */
   focusOn(worldPos: THREE.Vector3, distance = FOCUS_DISTANCE): void {
     const dir = this.camera.position.clone().sub(this.controls.target);
     dir.y = Math.abs(dir.y);
@@ -243,97 +420,189 @@ export class SceneManager {
     dir.normalize();
     const toPos = worldPos.clone().addScaledVector(dir, distance);
     toPos.y = Math.max(toPos.y, worldPos.y + distance * 0.25);
-    this.startTween(toPos, worldPos.clone());
+    this.startTween(toPos, worldPos.clone(), TWEEN_SECONDS);
   }
 
-  private startTween(toPos: THREE.Vector3, toTarget: THREE.Vector3): void {
+  private startTween(toPos: THREE.Vector3, toTarget: THREE.Vector3, duration: number): void {
     this.tween = {
       fromPos: this.camera.position.clone(),
       toPos,
       fromTarget: this.controls.target.clone(),
       toTarget,
       elapsed: 0,
+      duration,
     };
-  }
-
-  // ── atmosphere & quality (canvas toolbar) ────────────────────────────────
-
-  /** Switch lighting/sky between the calibrated 'day' look and 'night'. */
-  setTimeOfDay(mode: TimeOfDay): void {
-    this.currentTime = mode;
-    const p = TIME_PRESETS[mode];
-    this.scene.background = new THREE.Color(p.background);
-    const fog = this.scene.fog as THREE.Fog;
-    fog.color.set(p.background);
-    fog.near = p.fogNear;
-    fog.far = p.fogFar;
-    this.hemi.color.set(p.hemiSky);
-    this.hemi.groundColor.set(p.hemiGround);
-    this.hemi.intensity = p.hemiIntensity;
-    this.sun.color.set(p.sunColor);
-    this.sun.intensity = p.sunIntensity;
-  }
-
-  /** 'high' = capped devicePixelRatio, 'low' = 1× (for weaker GPUs). */
-  setQuality(level: RenderQuality): void {
-    this.renderer.setPixelRatio(level === 'high' ? Math.min(window.devicePixelRatio, 2) : 1);
   }
 
   /**
-   * Cinematic route intro: glide the camera above the path from origin to
-   * destination, then settle into a destination-facing 3/4 view.
-   *
-   * Kept subtle on purpose: constant (speed-proportional) motion, gentle
-   * height, no banking — and it is skipped entirely by the caller when
-   * prefers-reduced-motion is set. Any user orbit cancels it immediately.
+   * Cinematic first-load fly-in: start far above the park and settle into
+   * the framed view. Skipped by the caller under prefers-reduced-motion.
    */
-  flyAlong(pathPoints: readonly THREE.Vector3[], opts: FlightOptions = {}): void {
-    if (pathPoints.length < 2) return;
+  introFly(box: THREE.Box3, seconds = 2.8): void {
+    this.frameAll(box, false); // compute + snap to the framed view…
+    const framedPos = this.camera.position.clone();
+    const center = this.controls.target.clone();
+    const dir = framedPos.clone().sub(center);
+    const farPos = center.clone().addScaledVector(dir, 2.35).add(new THREE.Vector3(0, dir.length() * 0.42, 0));
+    this.camera.position.copy(farPos);
+    this.startTween(framedPos, center, seconds);
+  }
 
-    // Camera side: a consistent perpendicular offset so the flight does not
-    // cross over the route. Derived from the overall origin→destination axis.
-    const overall = pathPoints[pathPoints.length - 1]!.clone().sub(pathPoints[0]!);
-    overall.y = 0;
-    if (overall.lengthSq() < 1e-6) overall.set(0, 0, 1);
-    overall.normalize();
-    const side = new THREE.Vector3().crossVectors(overall, UP).normalize().multiplyScalar(58);
+  /**
+   * Follow mode: each frame the camera (and its target) pans toward the
+   * point `getter` returns, preserving the current viewing angle. Any user
+   * input cancels follow (fired via onFollowCancelled).
+   */
+  setFollowTarget(getter: (() => THREE.Vector3 | null) | null): void {
+    this.followGetter = getter;
+  }
 
-    const H = 88; // flight altitude above the path
-    const keys: FlightKeyframe[] = [];
-    let dist = 0;
-    const push = (pos: THREE.Vector3, tgt: THREE.Vector3): void => {
-      dist += keys.length > 0 ? pos.distanceTo(keys[keys.length - 1]!.pos) : 0;
-      keys.push({ pos: pos.clone(), tgt: tgt.clone(), dist });
-    };
+  // ── atmosphere API ──────────────────────────────────────────────────────
 
-    // Keyframes: above every path vertex (skipping none — paths are short).
-    for (let i = 0; i < pathPoints.length; i += 1) {
-      const p = pathPoints[i]!;
-      const pos = p.clone().add(new THREE.Vector3(0, H, 0)).add(side);
-      // Look slightly ahead along the route (toward the next vertex).
-      const look = pathPoints[Math.min(i + 1, pathPoints.length - 1)]!.clone();
-      look.y = 6;
-      push(pos, look);
+  /**
+   * Switch mood (twilight / night / blueprint). `animate` tweens every
+   * colour + light + fog parameter over ~0.85 s — this is the "magical"
+   * Guest ↔ Engineer transition.
+   */
+  setMood(name: MoodName, animate = true): void {
+    this.moodName = name;
+    if (!animate) {
+      const fresh = moodStateFrom(MOODS[name]);
+      // Snap: overwrite every live value (no allocation churn on this path).
+      this.mood.skyTop.copy(fresh.skyTop);
+      this.mood.skyMid.copy(fresh.skyMid);
+      this.mood.skyHorizon.copy(fresh.skyHorizon);
+      this.mood.fogColor.copy(fresh.fogColor);
+      this.mood.fogNear = fresh.fogNear;
+      this.mood.fogFar = fresh.fogFar;
+      this.mood.hemiSky.copy(fresh.hemiSky);
+      this.mood.hemiGround.copy(fresh.hemiGround);
+      this.mood.hemiIntensity = fresh.hemiIntensity;
+      this.mood.keyColor.copy(fresh.keyColor);
+      this.mood.keyIntensity = fresh.keyIntensity;
+      this.mood.fillColor.copy(fresh.fillColor);
+      this.mood.fillIntensity = fresh.fillIntensity;
+      this.mood.waterDeep.copy(fresh.waterDeep);
+      this.mood.waterShallow.copy(fresh.waterShallow);
+      this.mood.waterSparkle = fresh.waterSparkle;
+      this.mood.groundColor.copy(fresh.groundColor);
+      this.mood.stars = fresh.stars;
+      this.mood.lampGlow = fresh.lampGlow;
+      this.mood.nodeGlow = fresh.nodeGlow;
+      this.mood.exposure = fresh.exposure;
+      this.applyMoodToScene(this.mood);
+      return;
     }
-    // Final keyframe: pull back to a calm destination-facing 3/4 view.
-    const dest = pathPoints[pathPoints.length - 1]!;
-    push(dest.clone().addScaledVector(INITIAL_DIRECTION, 330).add(new THREE.Vector3(0, 60, 0)), dest.clone().add(new THREE.Vector3(0, 8, 0)));
+    this.moodDest = moodStateFrom(MOODS[name]);
+    this.moodProgress = 0;
+  }
 
-    const flight: {
-      keys: FlightKeyframe[];
-      totalDist: number;
-      elapsed: number;
-      duration: number;
-      onDone?: () => void;
-    } = {
-      keys,
-      totalDist: dist,
-      elapsed: 0,
-      duration: THREE.MathUtils.clamp(opts.duration ?? 5, 3, 9),
-    };
-    if (opts.onDone !== undefined) flight.onDone = opts.onDone;
-    this.flight = flight;
-    this.tween = null;
+  /** Guest day/night convenience (day → twilight). Ignored in blueprint. */
+  setTimeOfDay(mode: TimeOfDay): void {
+    if (this.moodName === 'blueprint') return;
+    this.setMood(mode === 'night' ? 'night' : 'twilight');
+  }
+
+  /** Apply the current mood state to scene objects + world hooks. */
+  private applyMoodToScene(m: MoodState): void {
+    (this.scene.fog as THREE.Fog).color.copy(m.fogColor);
+    (this.scene.fog as THREE.Fog).near = m.fogNear;
+    (this.scene.fog as THREE.Fog).far = m.fogFar;
+    (this.scene.background as THREE.Color).copy(m.skyTop);
+    this.hemi.color.copy(m.hemiSky);
+    this.hemi.groundColor.copy(m.hemiGround);
+    this.hemi.intensity = m.hemiIntensity;
+    this.sun.color.copy(m.keyColor);
+    this.sun.intensity = m.keyIntensity;
+    this.fill.color.copy(m.fillColor);
+    this.fill.intensity = m.fillIntensity;
+    this.renderer.toneMappingExposure = m.exposure;
+    this.starMaterial.opacity = m.stars;
+    this.skyUniforms.uTop.value.copy(m.skyTop);
+    this.skyUniforms.uMid.value.copy(m.skyMid);
+    this.skyUniforms.uHorizon.value.copy(m.skyHorizon);
+
+    const hooks = this.hooksRef;
+    if (hooks !== null) {
+      hooks.groundMat.color.copy(m.groundColor);
+      hooks.water.uDeep.value.copy(m.waterDeep);
+      hooks.water.uShallow.value.copy(m.waterShallow);
+      hooks.water.uSparkle.value = m.waterSparkle;
+      hooks.water.uFogColor.value.copy(m.fogColor);
+      hooks.water.uFogNear.value = m.fogNear;
+      hooks.water.uFogFar.value = m.fogFar;
+      hooks.lampHeadMat.emissiveIntensity = m.lampGlow * 2.4;
+      for (const mat of hooks.nodeMats) {
+        mat.emissive.setRGB(0.16 * m.nodeGlow, 0.62 * m.nodeGlow, 0.72 * m.nodeGlow);
+        mat.emissiveIntensity = 0.5 + m.nodeGlow * 0.9;
+      }
+      // Holographic walkway lift (blueprint) + a whisper of lamp-warmth at night.
+      const wp = m.lampGlow * 0.16; // faint night glow
+      for (const mat of hooks.walkwayMats) {
+        mat.emissive.setRGB(
+          0.02 * m.nodeGlow + wp * 0.6,
+          0.1 * m.nodeGlow + wp * 0.35,
+          0.15 * m.nodeGlow + wp * 0.18,
+        );
+        mat.emissiveIntensity = m.nodeGlow * 0.8 + wp;
+      }
+    }
+  }
+
+  /**
+   * Quality tiers (see viz/tokens.ts):
+   *   high     — full composer: SSAO + bloom + vignette, DPR ≤ 2
+   *   balanced — bloom + vignette, DPR ≤ 1.5
+   *   low      — direct render (no composer), DPR 1, no shadows
+   */
+  setQuality(level: RenderQuality): void {
+    const tier = QUALITY[level];
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, tier.dprCap));
+    this.renderer.shadowMap.enabled = tier.shadowMap > 0;
+    this.sun.castShadow = tier.shadowMap > 0;
+    if (tier.shadowMap > 0) this.sun.shadow.mapSize.set(tier.shadowMap, tier.shadowMap);
+    this.rebuildComposer(tier);
+  }
+
+  private rebuildComposer(tier: { composer: boolean; bloom: boolean; ssao: boolean; vignette: boolean }): void {
+    if (this.composer !== null) {
+      this.composer.dispose();
+      this.composer = null;
+    }
+    if (!tier.composer) return;
+
+    const w = this.container.clientWidth;
+    const h = Math.max(1, this.container.clientHeight);
+    // Compositor renders to a render target, so re-enable MSAA there
+    // (4× on high, 2× on balanced) to keep edges smooth.
+    const target = new THREE.WebGLRenderTarget(w, h, { samples: tier.ssao ? 4 : 2 });
+    const composer = new EffectComposer(this.renderer, target);
+    composer.setSize(w, h);
+    composer.setPixelRatio(this.renderer.getPixelRatio());
+
+    if (tier.ssao) {
+      const ssao = new SSAOPass(this.scene, this.camera, w, h);
+      ssao.kernelRadius = 18;
+      ssao.minDistance = 0.0008;
+      ssao.maxDistance = 0.08;
+      composer.addPass(ssao);
+    } else {
+      composer.addPass(new RenderPass(this.scene, this.camera));
+    }
+    if (tier.bloom) {
+      const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.55, 0.65, 0.78);
+      composer.addPass(bloom);
+    }
+    if (tier.vignette) {
+      const vignette = new ShaderPass(VignetteShader);
+      const darkness = vignette.uniforms['darkness'];
+      const offset = vignette.uniforms['offset'];
+      if (darkness !== undefined) darkness.value = 1.15;
+      if (offset !== undefined) offset.value = 1.05;
+      composer.addPass(vignette);
+    }
+    composer.addPass(new OutputPass());
+    this.composer = composer;
   }
 
   private onResize(): void {
@@ -342,6 +611,7 @@ export class SceneManager {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    this.composer?.setSize(w, h);
   }
 
   private loop = (): void => {
@@ -350,43 +620,119 @@ export class SceneManager {
     const dt = Math.min(this.clock.getDelta(), 0.1);
     const t = this.clock.elapsedTime;
 
+    // Mood tween (Guest ↔ Engineer transition): exponential approach toward
+    // the destination state — frame-rate independent, zero allocations.
+    if (this.moodProgress < 1 && this.moodDest !== null) {
+      this.moodProgress = Math.min(1, this.moodProgress + dt / MOOD_TWEEN_SECONDS);
+      const k = 1 - Math.pow(0.00005, dt / MOOD_TWEEN_SECONDS);
+      lerpMood(this.mood, this.moodDest, k);
+      this.applyMoodToScene(this.mood);
+      if (this.moodProgress >= 1) {
+        // Settle exactly on the target, then release the destination.
+        lerpMood(this.mood, this.moodDest, 1);
+        this.applyMoodToScene(this.mood);
+        this.moodDest = null;
+      }
+    }
+
     if (this.tween !== null) {
       this.tween.elapsed += dt;
-      const k = easeInOutCubic(Math.min(1, this.tween.elapsed / TWEEN_SECONDS));
+      const k = easeInOutCubic(Math.min(1, this.tween.elapsed / this.tween.duration));
       this.camera.position.lerpVectors(this.tween.fromPos, this.tween.toPos, k);
       this.controls.target.lerpVectors(this.tween.fromTarget, this.tween.toTarget, k);
-      if (this.tween.elapsed >= TWEEN_SECONDS) this.tween = null;
+      if (this.tween.elapsed >= this.tween.duration) this.tween = null;
     } else if (this.flight !== null) {
       this.flight.elapsed += dt;
       const u = Math.min(1, this.flight.elapsed / this.flight.duration);
       const targetDist = u * this.flight.totalDist;
-      // Find the segment whose cumulative span contains targetDist.
       const keys = this.flight.keys;
       let i = 0;
       while (i + 1 < keys.length - 1 && keys[i + 1]!.dist < targetDist) i += 1;
       const a = keys[i]!;
       const b = keys[i + 1]!;
       const span = b.dist - a.dist;
-      const t = span > 1e-6 ? (targetDist - a.dist) / span : 1;
-      this.camera.position.lerpVectors(a.pos, b.pos, t);
-      this.controls.target.lerpVectors(a.tgt, b.tgt, t);
+      const tt = span > 1e-6 ? (targetDist - a.dist) / span : 1;
+      this.camera.position.lerpVectors(a.pos, b.pos, tt);
+      this.controls.target.lerpVectors(a.tgt, b.tgt, tt);
       if (u >= 1) {
         const done = this.flight.onDone;
         this.flight = null;
         done?.();
       }
+    } else if (this.followGetter !== null) {
+      const pt = this.followGetter();
+      if (pt !== null) {
+        const follow = Math.min(1, dt * 3.2);
+        const dx = (pt.x - this.controls.target.x) * follow;
+        const dy = (pt.y - this.controls.target.y) * follow;
+        const dz = (pt.z - this.controls.target.z) * follow;
+        this.controls.target.x += dx;
+        this.controls.target.y += dy;
+        this.controls.target.z += dz;
+        this.camera.position.x += dx;
+        this.camera.position.y += dy;
+        this.camera.position.z += dz;
+      }
     }
 
     this.controls.update();
     for (const fn of this.tickers) fn(dt, t);
-    this.renderer.render(this.scene, this.camera);
+
+    if (this.composer !== null) {
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   };
+
+  /**
+   * Cinematic route intro: glide above the path from origin to destination,
+   * then settle into a destination-facing 3/4 view. Constant speed, gentle
+   * height, no banking. Any user orbit cancels it immediately.
+   */
+  flyAlong(pathPoints: readonly THREE.Vector3[], opts: FlightOptions = {}): void {
+    if (pathPoints.length < 2) return;
+
+    const overall = pathPoints[pathPoints.length - 1]!.clone().sub(pathPoints[0]!);
+    overall.y = 0;
+    if (overall.lengthSq() < 1e-6) overall.set(0, 0, 1);
+    overall.normalize();
+    const side = new THREE.Vector3().crossVectors(overall, UP).normalize().multiplyScalar(58);
+
+    const H = 88;
+    const keys: FlightKeyframe[] = [];
+    let dist = 0;
+    const push = (pos: THREE.Vector3, tgt: THREE.Vector3): void => {
+      dist += keys.length > 0 ? pos.distanceTo(keys[keys.length - 1]!.pos) : 0;
+      keys.push({ pos: pos.clone(), tgt: tgt.clone(), dist });
+    };
+
+    for (let i = 0; i < pathPoints.length; i += 1) {
+      const p = pathPoints[i]!;
+      const pos = p.clone().add(new THREE.Vector3(0, H, 0)).add(side);
+      const look = pathPoints[Math.min(i + 1, pathPoints.length - 1)]!.clone();
+      look.y = 6;
+      push(pos, look);
+    }
+    const dest = pathPoints[pathPoints.length - 1]!;
+    push(dest.clone().addScaledVector(INITIAL_DIRECTION, 330).add(new THREE.Vector3(0, 60, 0)), dest.clone().add(new THREE.Vector3(0, 8, 0)));
+
+    this.flight = {
+      keys,
+      totalDist: dist,
+      elapsed: 0,
+      duration: THREE.MathUtils.clamp(opts.duration ?? 5, 3, 9),
+      ...(opts.onDone !== undefined ? { onDone: opts.onDone } : {}),
+    };
+    this.tween = null;
+  }
 
   dispose(): void {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     this.resizeObserver.disconnect();
     this.controls.dispose();
+    this.composer?.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

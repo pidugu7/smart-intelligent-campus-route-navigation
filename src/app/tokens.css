@@ -1,0 +1,102 @@
+/* ── Design tokens (single source of truth for the UI shell) ────────────────
+ * "Twilight Luxe" guest / "Holographic Blueprint" engineer.
+ * Everything visual in style.css should reference these, never raw values.
+ */
+
+:root {
+  /* ── palette: base ─────────────────────────────────────────────────── */
+  --bg: #0a0f1e;
+  --text: #f2ede3; /* soft cream */
+  --text-dim: #c6cfdc;
+  --muted: #9aa6bd;
+  --faint: #67748e;
+
+  /* ── palette: accents (gold is scarce — it means "route / primary") ── */
+  --gold: #f5b942;
+  --gold-bright: #ffd98a;
+  --gold-soft: rgba(245, 185, 66, 0.14);
+  --gold-line: rgba(245, 185, 66, 0.4);
+  --gold-ink: #241804;
+  --teal: #37c8b6;
+  --teal-soft: rgba(55, 200, 182, 0.13);
+  --teal-line: rgba(55, 200, 182, 0.38);
+
+  --ok: #4cc38a;
+  --warn: #e0b34c;
+  --bad: #ef4444;
+  --bad-soft: #e57373;
+
+  /* ── surfaces (glass) ──────────────────────────────────────────────── */
+  --glass: rgba(13, 19, 36, 0.66);
+  --glass-strong: rgba(11, 16, 31, 0.86);
+  --glass-edge: rgba(146, 168, 210, 0.16);
+  --glass-hi: rgba(255, 255, 255, 0.05); /* 1px inner highlight */
+  --card: #121b30;
+  --card-2: #0f1728;
+  --line: #22304e;
+  --line-soft: #1a2540;
+
+  /* ── radii ─────────────────────────────────────────────────────────── */
+  --r-s: 9px;
+  --r-m: 14px;
+  --r-l: 20px;
+  --r-pill: 999px;
+
+  /* ── shadows (layered, soft) ───────────────────────────────────────── */
+  --sh-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 10px rgba(0, 0, 0, 0.3);
+  --sh-2: 0 4px 14px rgba(0, 0, 0, 0.42), 0 12px 38px rgba(0, 0, 0, 0.4);
+  --sh-3: 0 6px 20px rgba(0, 0, 0, 0.5), 0 28px 80px rgba(0, 0, 0, 0.55);
+
+  /* ── spacing ───────────────────────────────────────────────────────── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* ── motion (springs + calm easing) ────────────────────────────────── */
+  --ease-spring: cubic-bezier(0.34, 1.45, 0.45, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 150ms;
+  --dur-med: 300ms;
+  --dur-slow: 620ms;
+
+  /* ── type ──────────────────────────────────────────────────────────── */
+  --font-display: "Sora", "Inter", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* ── glass recipe (one class, used everywhere) ─────────────────────── */
+  color-scheme: dark;
+
+  /* ── legacy aliases (phase ≤6 names → token values, single source) ── */
+  --panel: var(--card-2);
+  --panel-2: var(--card-2);
+  --border: var(--line);
+  --border-soft: var(--line-soft);
+  --accent: var(--gold);
+  --accent-soft: var(--gold-soft);
+  --accent-ink: var(--gold-ink);
+  --steel: #7fb2e5;
+  --steel-soft: rgba(127, 178, 229, 0.18);
+  --route: var(--gold);
+  --alt: #93a3b8;
+  --bad-soft: #e57373;
+  --radius: var(--r-m);
+  --font: var(--font-body);
+}
+
+/* Engineer "Holographic Blueprint" surface overrides: colder, more cyan,
+   slightly more translucent — the chrome matches the scene's mood. */
+#app[data-mode="engineer"] {
+  --glass: rgba(8, 18, 26, 0.68);
+  --glass-strong: rgba(6, 14, 20, 0.88);
+  --glass-edge: rgba(90, 200, 220, 0.22);
+  --card: #0c1a24;
+  --card-2: #0a1520;
+  --line: #14424e;
+  --line-soft: #0f3038;
+  --muted: #8fb6c0;
+  --faint: #587e8a;
+}

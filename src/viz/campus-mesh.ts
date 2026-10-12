@@ -14,6 +14,8 @@
 
 import * as THREE from 'three';
 import type { CampusLayout } from './layout';
+import type { MoodHooks } from './scene';
+import { MOODS, mulberry32 } from './tokens';
 
 // ── palette (original, restrained) ─────────────────────────────────────────
 const COLORS = {
@@ -74,6 +76,10 @@ export interface CampusMeshes {
   /** Graph overlay (nodes + edge weights) on/off — Engineer "Show Graph". */
   setGraphVisible(visible: boolean): void;
   graphVisible(): boolean;
+  /** Mood-system tint slots (SceneManager.attachMoodHooks). */
+  moodHooks: MoodHooks;
+  /** Per-frame animation: water uTime + pennant sway. */
+  tick(t: number): void;
 }
 
 /** Dataset (x, y) → three.js world position (north = -z, y = up). */
@@ -557,6 +563,368 @@ const NODE_HEIGHT: Record<string, number> = {
   'land-spaceship': 98,
 };
 
+// ── Phase 1 atmosphere helpers ────────────────────────────────────────────────
+
+/** Radial ground texture: bright park centre fading to darker parkland edge.
+ *  Generated once, tinted per-mood by the material colour (multiply). */
+function makeGroundTexture(): THREE.CanvasTexture {
+  const size = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const g = ctx.createRadialGradient(size / 2, size / 2, size * 0.05, size / 2, size / 2, size * 0.5);
+  g.addColorStop(0, '#ffffff');
+  g.addColorStop(0.55, '#dfe6da');
+  g.addColorStop(1, '#9aa394');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  // Subtle deterministic mottle so the ground isn't a perfect radial wipe.
+  const rng = mulberry32(7);
+  for (let i = 0; i < 900; i += 1) {
+    const x = rng() * size;
+    const y = rng() * size;
+    const r = 4 + rng() * 22;
+    const shade = 190 + Math.floor(rng() * 50);
+    ctx.fillStyle = `rgba(${shade}, ${shade + 8}, ${shade - 6}, ${0.03 + rng() * 0.05})`;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/**
+ * Lagoon water: a small hand-written shader (no assets).
+ *  - fresnel-style mix between deep and shallow tones
+ *  - two travelling sine ripple fields + a high-frequency sparkle
+ *  - a fake sky-reflection band near the rim (labelled: approximation,
+ *    there is no real reflection probe)
+ *  - manual distance fog so the shader matches the scene fog
+ */
+function makeWaterMaterial(lagoonRadius: number): {
+  mat: THREE.ShaderMaterial;
+  uniforms: MoodHooks['water'];
+  /** Live uTime uniform for per-frame updates. */
+  timeRef: THREE.IUniform<number>;
+} {
+  const uniforms = {
+    uTime: { value: 0 },
+    uDeep: { value: new THREE.Color(MOODS.twilight.waterDeep) },
+    uShallow: { value: new THREE.Color(MOODS.twilight.waterShallow) },
+    uSparkle: { value: MOODS.twilight.waterSparkle },
+    uFogColor: { value: new THREE.Color(MOODS.twilight.fogColor) },
+    uFogNear: { value: MOODS.twilight.fogNear },
+    uFogFar: { value: MOODS.twilight.fogFar },
+    uRadius: { value: lagoonRadius },
+  };
+  const mat = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: /* glsl */ `
+      varying vec2 vUv;
+      varying vec3 vWorld;
+      void main() {
+        vUv = uv;
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorld = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      uniform vec3 uDeep;
+      uniform vec3 uShallow;
+      uniform float uSparkle;
+      uniform vec3 uFogColor;
+      uniform float uFogNear;
+      uniform float uFogFar;
+      uniform float uRadius;
+      varying vec2 vUv;
+      varying vec3 vWorld;
+      void main() {
+        // uv of a CircleGeometry: 0..1 across the disc, centre at 0.5
+        vec2 p = (vUv - 0.5) * 2.0;
+        float d = length(p);
+        float t = uTime;
+        // Two overlapping ripple fields (cheap, deterministic).
+        float w1 = sin(p.x * 16.0 + t * 0.8) * sin(p.y * 14.0 - t * 0.6);
+        float w2 = sin((p.x + p.y) * 28.0 - t * 1.5) * 0.5;
+        float ripple = w1 * 0.55 + w2 * 0.35;
+        // Fresnel-style: shallow/brighter toward the rim (grazing view).
+        float fres = smoothstep(0.15, 1.0, d);
+        vec3 col = mix(uDeep, uShallow, clamp(fres * 0.9 + ripple * 0.22, 0.0, 1.0));
+        // Fake reflection band near the rim (approximation, not a probe).
+        col += uShallow * 0.14 * smoothstep(0.62, 1.0, d);
+        // Sparkle: product of three high-frequency sines, sharpened.
+        float sp = sin(p.x * 96.0 + t * 2.1)
+                 * sin(p.y * 88.0 - t * 1.8)
+                 * sin((p.x - p.y) * 70.0 + t * 2.6);
+        col += vec3(pow(max(sp, 0.0), 16.0) * uSparkle * 0.9);
+        // Manual distance fog (shader is not part of the scene fog pass).
+        float fd = distance(cameraPosition, vWorld);
+        col = mix(col, uFogColor, smoothstep(uFogNear, uFogFar, fd));
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+  });
+  return {
+    mat,
+    uniforms: {
+      uDeep: uniforms.uDeep,
+      uShallow: uniforms.uShallow,
+      uSparkle: uniforms.uSparkle,
+      uFogColor: uniforms.uFogColor,
+      uFogNear: uniforms.uFogNear,
+      uFogFar: uniforms.uFogFar,
+    },
+    timeRef: uniforms.uTime,
+  };
+}
+
+/**
+ * Stone plaza discs beneath major locations. Zone tint (Phase 3):
+ * World Showcase (pavilion ring) reads WARM, the front-of-park / lagoon
+ * side (Future World) reads COOL — derived from the dataset `type`, no
+ * extra data.
+ */
+function addStonePlazas(group: THREE.Group, layout: CampusLayout): void {
+  const geo = new THREE.CircleGeometry(1, 40);
+  geo.rotateX(-Math.PI / 2);
+  const warmMat = std(0xd8c5a4, { flat: false, roughness: 0.85, metalness: 0.02 }); // Showcase — warm stone
+  const coolMat = std(0xbcc9d2, { flat: false, roughness: 0.85, metalness: 0.02 }); // Future World — cool stone
+  for (const v of layout.vertices) {
+    if (!v.major) continue;
+    const p = toWorld(v.x, v.y, 0);
+    const m = new THREE.Mesh(geo, v.type === 'pavilion' ? warmMat : coolMat);
+    const s = v.type === 'pavilion' ? 34 : v.type === 'gate' ? 30 : 26;
+    m.scale.set(s, 1, s);
+    m.position.set(p.x, 0.45, p.z);
+    m.receiveShadow = true;
+    group.add(m);
+  }
+}
+
+/**
+ * Per-pavilion pennant flags (recognisable from above, no trademarks):
+ * each is a simple pennant with the nation's colour bands (and, where the
+ * real flag is a charge on a field, a simple original disc/cross).
+ * Simplified geometric interpretation — documented as such.
+ */
+const PAVILION_PENNANT_SPECS: Record<string, { bands: string[]; disc?: string; cross?: boolean }> = {
+  'pav-mexico': { bands: ['#006847', '#ffffff', '#ce1126'] },
+  'pav-norway': { bands: ['#ba0c2f', '#ffffff', '#00205b'] },
+  'pav-china': { bands: ['#de2910'], disc: '#ffde00' },
+  'pav-germany': { bands: ['#1a1a1a', '#dd0000', '#ffce00'] },
+  'pav-italy': { bands: ['#009246', '#ffffff', '#ce2b37'] },
+  'pav-america': { bands: ['#b22234', '#ffffff', '#3c3b6e'] },
+  'pav-japan': { bands: ['#ffffff'], disc: '#bc002d' },
+  'pav-morocco': { bands: ['#c1272d'], disc: '#006233' },
+  'pav-france': { bands: ['#0055a4', '#ffffff', '#ef4135'] },
+  'pav-uk': { bands: ['#012169'], cross: true },
+  'pav-canada': { bands: ['#d80621', '#ffffff', '#d80621'] },
+};
+
+function pennantTexture(spec: { bands: string[]; disc?: string; cross?: boolean }): THREE.CanvasTexture {
+  const w = 48;
+  const h = 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  const n = spec.bands.length;
+  for (let i = 0; i < n; i += 1) {
+    ctx.fillStyle = spec.bands[i]!;
+    ctx.fillRect((i * w) / n, 0, w / n + 1, h);
+  }
+  if (spec.cross) {
+    // Simplified cross on the field (original, not the flag artwork).
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(w / 2 - 4, 0, 8, h);
+    ctx.fillRect(0, h / 2 - 4, w, 8);
+    ctx.fillStyle = '#d52b1e';
+    ctx.fillRect(w / 2 - 2, 0, 4, h);
+    ctx.fillRect(0, h / 2 - 2, w, 4);
+  }
+  if (spec.disc !== undefined) {
+    ctx.fillStyle = spec.disc;
+    ctx.beginPath();
+    ctx.arc(w / 2, h / 2, 7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+export interface PennantSwing {
+  pennant: THREE.Mesh;
+  baseRotY: number;
+  phase: number;
+}
+
+function addPennants(group: THREE.Group, layout: CampusLayout): PennantSwing[] {
+  const poleGeo = new THREE.CylinderGeometry(0.35, 0.5, 15, 6);
+  const poleMat = std(0x8a94a4, { flat: false, metalness: 0.4, roughness: 0.5 });
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0);
+  shape.lineTo(15, -2.6);
+  shape.lineTo(0, -5.2);
+  shape.closePath();
+  const pennantGeo = new THREE.ShapeGeometry(shape);
+  const swings: PennantSwing[] = [];
+  layout.vertices.forEach((v, vi) => {
+    if (v.type !== 'pavilion') return;
+    const spec = PAVILION_PENNANT_SPECS[v.id];
+    if (spec === undefined) return;
+    const p = toWorld(v.x, v.y, 0);
+    // Pole just outside the building, on the lagoon-facing side.
+    const ang = Math.atan2(-v.y, v.x);
+    const ox = Math.cos(ang + 0.5) * 30;
+    const oz = -Math.sin(ang + 0.5) * 30;
+    const pole = new THREE.Mesh(poleGeo, poleMat);
+    pole.position.set(p.x + ox, 7.5, p.z + oz);
+    pole.castShadow = true;
+    const pennant = new THREE.Mesh(
+      pennantGeo,
+      new THREE.MeshStandardMaterial({ map: pennantTexture(spec), side: THREE.DoubleSide, roughness: 0.8 }),
+    );
+    const baseRotY = -ang + 0.4;
+    pennant.position.set(0, 7.4, 0);
+    pennant.rotation.y = baseRotY;
+    pole.add(pennant);
+    swings.push({ pennant, baseRotY, phase: vi * 1.7 });
+    group.add(pole);
+  });
+  return swings;
+}
+
+/**
+ * Instanced trees (trunk + canopy) — one draw call each. Placement is
+ * deterministic (seeded PRNG): clusters near major locations + a perimeter
+ * ring. Never inside the lagoon.
+ */
+function addInstancedTrees(group: THREE.Group, layout: CampusLayout): void {
+  const rng = mulberry32(20261012);
+  const spots: THREE.Vector3[] = [];
+  const inLagoon = (x: number, z: number): boolean =>
+    layout.lagoonRadius > 0 && Math.hypot(x, z) < layout.lagoonRadius + 14;
+
+  for (const v of layout.vertices) {
+    if (!v.major && v.type !== 'area') continue;
+    const n = v.type === 'pavilion' ? 6 : 4;
+    for (let i = 0; i < n; i += 1) {
+      const ang = rng() * Math.PI * 2;
+      const dist = 42 + rng() * 26;
+      const x = v.x + Math.cos(ang) * dist;
+      const z = -v.y - Math.sin(ang) * dist; // dataset y → world -z
+      if (inLagoon(x, z)) continue;
+      if (layout.ringRadius > 0 && Math.hypot(x, z) > layout.ringRadius * 1.42) continue;
+      spots.push(toWorld(x, -z, 0));
+    }
+  }
+  // Perimeter ring for a finished parkland edge.
+  if (layout.ringRadius > 0) {
+    for (let i = 0; i < 34; i += 1) {
+      const ang = (i / 34) * Math.PI * 2 + rng() * 0.14;
+      const r = layout.ringRadius * (1.24 + rng() * 0.1);
+      const x = Math.cos(ang) * r;
+      const z = Math.sin(ang) * r;
+      if (inLagoon(x, z)) continue;
+      spots.push(new THREE.Vector3(x, 0, z));
+    }
+  }
+  if (spots.length === 0) return;
+
+  const dummy = new THREE.Object3D();
+  const trunkGeo = new THREE.CylinderGeometry(0.5, 0.75, 6, 6);
+  const trunkMat = std(0x4a3a28, { flat: true });
+  const canGeo = new THREE.ConeGeometry(3.4, 10, 7);
+  const canMat = std(0x2f6b3a, { flat: true });
+  const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, spots.length);
+  const canopies = new THREE.InstancedMesh(canGeo, canMat, spots.length);
+  trunks.castShadow = true;
+  canopies.castShadow = true;
+  for (let i = 0; i < spots.length; i += 1) {
+    const s = spots[i]!;
+    const sc = 0.8 + rng() * 0.7;
+    dummy.position.set(s.x, 3 * sc, s.z);
+    dummy.scale.setScalar(sc);
+    dummy.rotation.y = rng() * Math.PI * 2;
+    dummy.updateMatrix();
+    trunks.setMatrixAt(i, dummy.matrix);
+    dummy.position.y = (6 + 4.5) * sc;
+    dummy.updateMatrix();
+    canopies.setMatrixAt(i, dummy.matrix);
+  }
+  trunks.instanceMatrix.needsUpdate = true;
+  canopies.instanceMatrix.needsUpdate = true;
+  group.add(trunks, canopies);
+}
+
+/**
+ * Instanced lamp posts along the walkways (one draw call for poles, one for
+ * heads). Heads are emissive — the mood system drives emissiveIntensity, so
+ * at night (and in blueprint mode) they bloom.
+ */
+function addLampPosts(group: THREE.Group, layout: CampusLayout): {
+  headMat: THREE.MeshStandardMaterial;
+} {
+  const spots: THREE.Vector3[] = [];
+  for (const e of layout.edges) {
+    const a = toWorld(e.fromX, e.fromY, 0);
+    const b = toWorld(e.toX, e.toY, 0);
+    const dir = b.clone().sub(a);
+    const len = dir.length();
+    if (len < 30) continue;
+    const steps = Math.min(3, Math.max(1, Math.floor(len / 75)));
+    const side = new THREE.Vector3().crossVectors(dir, UP).normalize();
+    for (let s = 1; s <= steps; s += 1) {
+      const t = s / (steps + 1);
+      const mid = a.clone().addScaledVector(dir, t);
+      // Ring walkways: lamps on the OUTER edge (away from the lagoon).
+      // Inner walkways: alternate perpendicular sides.
+      let off: THREE.Vector3;
+      if (layout.ringRadius > 0 && mid.length() > layout.ringRadius * 0.8) {
+        off = new THREE.Vector3(mid.x, 0, mid.z).normalize().multiplyScalar(walkwayRadius(e.widthClass) + 3);
+      } else {
+        off = side.clone().multiplyScalar((walkwayRadius(e.widthClass) + 3) * (s % 2 === 0 ? 1 : -1));
+      }
+      const p = mid.add(off);
+      if (layout.lagoonRadius > 0 && Math.hypot(p.x, p.z) < layout.lagoonRadius + 6) continue;
+      spots.push(p);
+    }
+  }
+  if (spots.length === 0) return { headMat: std(0x2b3038, { flat: false }) };
+
+  const poleGeo = new THREE.CylinderGeometry(0.26, 0.42, 7, 6);
+  const poleMat = std(0x2b3038, { flat: false, metalness: 0.4, roughness: 0.5 });
+  const headGeo = new THREE.SphereGeometry(1.2, 12, 10);
+  const headMat = std(0x3a3f4a, { flat: false, metalness: 0.2, roughness: 0.4 });
+  headMat.emissive = new THREE.Color(0xffd9a0);
+  headMat.emissiveIntensity = MOODS.twilight.lampGlow * 2.4;
+  const poles = new THREE.InstancedMesh(poleGeo, poleMat, spots.length);
+  const heads = new THREE.InstancedMesh(headGeo, headMat, spots.length);
+  poles.castShadow = true;
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < spots.length; i += 1) {
+    const p = spots[i]!;
+    dummy.position.set(p.x, 3.5, p.z);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.setScalar(1);
+    dummy.updateMatrix();
+    poles.setMatrixAt(i, dummy.matrix);
+    dummy.position.set(p.x, 7.6, p.z);
+    dummy.updateMatrix();
+    heads.setMatrixAt(i, dummy.matrix);
+  }
+  poles.instanceMatrix.needsUpdate = true;
+  heads.instanceMatrix.needsUpdate = true;
+  group.add(poles, heads);
+  return { headMat };
+}
+
 export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
   const group = new THREE.Group();
   group.name = 'campus';
@@ -590,7 +958,19 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
   const groundGeo = new THREE.ExtrudeGeometry(shape, { depth: 16, bevelEnabled: false, steps: 1 });
   groundGeo.rotateX(-Math.PI / 2);
   groundGeo.translate(0, -16, 0);
-  const ground = new THREE.Mesh(groundGeo, [std(COLORS.groundTop, { flat: false }), std(COLORS.groundSide, { flat: false })]);
+  // Top face carries the radial texture; the mood system tints this material.
+  // ExtrudeGeometry cap UVs are raw shape coordinates, so map the park radius
+  // to the texture's full 0..1 extent (ClampToEdge, gradient centred at 0).
+  const groundTopMat = std(MOODS.twilight.groundColor, { flat: false });
+  const groundTex = makeGroundTexture();
+  const groundRange = Math.max(1, (layout.ringRadius || 300) * 1.16);
+  groundTex.wrapS = THREE.ClampToEdgeWrapping;
+  groundTex.wrapT = THREE.ClampToEdgeWrapping;
+  groundTex.repeat.set(1 / groundRange, 1 / groundRange);
+  groundTex.offset.set(0.5, 0.5);
+  groundTopMat.map = groundTex;
+  const groundSideMat = std(COLORS.groundSide, { flat: false });
+  const ground = new THREE.Mesh(groundGeo, [groundTopMat, groundSideMat]);
   ground.receiveShadow = true;
   group.add(ground);
 
@@ -615,19 +995,25 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
   plinthMesh.userData.noBounds = true; // excluded from camera framing
   group.add(plinthMesh);
 
-  // Lagoon water.
+  // Lagoon water — animated shader (ripples, fake reflection band, sparkle,
+  // manual fog). Colours are mood-driven uniforms.
+  let waterUniforms: MoodHooks['water'] | null = null;
+  let waterTime: THREE.IUniform<number> | null = null;
   if (layout.lagoonRadius > 0) {
     const waterGeo = new THREE.CircleGeometry(layout.lagoonRadius, 64);
     waterGeo.rotateX(-Math.PI / 2);
-    const water = new THREE.Mesh(waterGeo, std(COLORS.water, { roughness: 0.35, metalness: 0.15, flat: false }));
+    const { mat: waterMat, uniforms, timeRef } = makeWaterMaterial(layout.lagoonRadius);
+    waterUniforms = uniforms;
+    waterTime = timeRef;
+    const water = new THREE.Mesh(waterGeo, waterMat);
     water.position.y = 0.7;
-    water.receiveShadow = true;
     group.add(water);
   }
 
   // Walkways (one mesh per dataset edge), colour + width by class.
   const edges = new Map<string, THREE.Mesh>();
   const edgeByPair = new Map<string, THREE.Mesh>();
+  const walkwayMats: THREE.MeshStandardMaterial[] = [];
   for (const e of layout.edges) {
     const a = toWorld(e.fromX, e.fromY, 0.9);
     const b = toWorld(e.toX, e.toY, 0.9);
@@ -682,7 +1068,15 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     m.userData.fromId = e.fromId;
     m.userData.toId = e.toId;
     m.userData.baseColor = e.isBridge ? COLORS.bridge : walkwayBaseColor(e.widthClass);
+    if (m.material instanceof THREE.MeshStandardMaterial) walkwayMats.push(m.material);
   }
+
+  // Phase 1: stone plazas, instanced trees, instanced lamp posts.
+  // Phase 3: per-pavilion pennants (recognisable from above, no trademarks).
+  addStonePlazas(group, layout);
+  addInstancedTrees(group, layout);
+  const lamps = addLampPosts(group, layout);
+  const pennants = addPennants(group, layout);
 
   // Engineer "graph" overlay: one weight chip per edge (hidden in Guest mode).
   const weightLabels = new THREE.Group();
@@ -702,6 +1096,7 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
   // Buildings + graph nodes + labels.
   const nodes = new Map<string, THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>>();
   const labels = new Map<string, THREE.Sprite>();
+  const nodeMats: THREE.MeshStandardMaterial[] = [];
   for (const v of layout.vertices) {
     const p = toWorld(v.x, v.y, 0);
     const building = buildingFor(v.id, v.type);
@@ -715,6 +1110,7 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     const nodeY = NODE_HEIGHT[v.id] ?? 30;
     const nodeGeo = new THREE.SphereGeometry(v.type === 'gate' ? 7 : v.type === 'pavilion' ? 6.5 : 5, 18, 12);
     const nodeMat = std(COLORS.node, { metalness: 0.25, roughness: 0.5, flat: false });
+    nodeMats.push(nodeMat);
     const node = new THREE.Mesh(nodeGeo, nodeMat);
     node.position.copy(p).add(new THREE.Vector3(0, nodeY, 0));
     node.userData.vertexId = v.id;
@@ -767,6 +1163,30 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
     labelsVisible: () => labelVisibility,
     setGraphVisible,
     graphVisible: () => graphVisibility,
+    /** Mood system tint slots (see SceneManager.attachMoodHooks). */
+    moodHooks: {
+      groundMat: groundTopMat,
+      water:
+        waterUniforms ??
+        ({
+          uDeep: { value: new THREE.Color() },
+          uShallow: { value: new THREE.Color() },
+          uSparkle: { value: 0 },
+          uFogColor: { value: new THREE.Color() },
+          uFogNear: { value: 1 },
+          uFogFar: { value: 1 },
+        } as MoodHooks['water']),
+      lampHeadMat: lamps.headMat,
+      nodeMats,
+      walkwayMats,
+    },
+    /** Per-frame animation: water + pennant sway. */
+    tick: (t: number): void => {
+      if (waterTime !== null) waterTime.value = t;
+      for (const s of pennants) {
+        s.pennant.rotation.y = s.baseRotY + Math.sin(t * 1.3 + s.phase) * 0.1;
+      }
+    },
   };
 }
 

@@ -31,6 +31,7 @@ import {
 import { SceneManager, type RenderQuality, type TimeOfDay } from '../viz/scene';
 import { buildCampusLayout } from '../viz/layout';
 import { buildCampusMeshes, pairKey } from '../viz/campus-mesh';
+import { buildMarkers, CATEGORIES } from '../viz/markers';
 import {
   RouteLayer,
   ROUTE_COLOR,
@@ -39,14 +40,21 @@ import {
   ALT_ROUTE_RADIUS,
 } from '../viz/route-layer';
 import { TraceReplayer, describeTraceEvent } from '../viz/replay';
-import { resolveLabels, type LabelContext, type LabelPlacement, type LabelTier } from '../viz/label-policy';
+import {
+  resolveLabels,
+  LABEL_FAR_DISTANCE,
+  LABEL_MEDIUM_DISTANCE,
+  type LabelContext,
+  type LabelPlacement,
+  type LabelTier,
+} from '../viz/label-policy';
 import { buildControls, type AppMode } from './ui/controls';
 import {
   pathLengthMeters,
   renderAlternative,
   renderBlockReport,
   renderComparison,
-  renderGuestSummary,
+  renderHeroRoute,
   renderProvenanceInfo,
   renderRouteResult,
   fmtDistance,
@@ -55,9 +63,11 @@ import {
 import { buildTimeline } from './ui/timeline';
 import { buildHud } from './ui/hud';
 import { buildTour, hasCompletedTour } from './ui/tour';
+import { buildPalette } from './ui/palette';
 import { icon } from './ui/icons';
 import { narrateEvent, technicalEventKind } from './narrator';
 import type { SearchItem } from './ui/search';
+import './tokens.css';
 import './style.css';
 
 const ALGO_LABEL: Record<AlgorithmId, string> = {
@@ -165,6 +175,12 @@ async function main(): Promise<void> {
   const layout = buildCampusLayout(loaded.dataset);
   const meshes = buildCampusMeshes(layout);
   scene.scene.add(meshes.group);
+  scene.attachMoodHooks(meshes.moodHooks); // mood system → world materials
+  // Marker badges (Phase 3): round category glyphs on stems, pickable in
+  // BOTH modes — the guest way to select places.
+  const markers = buildMarkers(layout, meshes.labels);
+  scene.scene.add(markers.group);
+  markers.setAllVisible(meshes.labelsVisible());
   const routeLayer = new RouteLayer(scene.scene, meshes);
   scene.frameAll(meshes.contentBox);
 
@@ -330,6 +346,19 @@ async function main(): Promise<void> {
         mat.opacity = essential || tier === 'major' ? 1 : THREE.MathUtils.clamp(1.2 - d / 2200, 0.45, 1);
       }
     }
+
+    // Marker badge LOD (Phase 3): far → majors only, mid → +detail
+    // (attractions/landmarks), close → all. Badges also scale with depth.
+    const badgeTier: 'far' | 'mid' | 'close' =
+      camDist >= LABEL_FAR_DISTANCE ? 'far' : camDist >= LABEL_MEDIUM_DISTANCE ? 'mid' : 'close';
+    for (const item of markers.items.values()) {
+      const bd = cam.position.distanceTo(item.badgePos);
+      const k = THREE.MathUtils.clamp(bd / 1500, 0.6, 2.1);
+      const s = (item.major ? markers.baseSize.major : markers.baseSize.minor) * k;
+      item.badge.scale.set(s, s, 1);
+      item.badge.visible =
+        item.major || badgeTier === 'close' || (badgeTier === 'mid' && item.detail);
+    }
   };
 
   // ── hover picking ────────────────────────────────────────────────────────
@@ -345,8 +374,50 @@ async function main(): Promise<void> {
     pointerNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
     pointerNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointerNdc, scene.camera);
-    const hits = raycaster.intersectObjects([...meshes.edges.values(), ...meshes.nodes.values()], false);
+    // Edges + graph nodes (engineer) + marker badges (both modes).
+    const hits = raycaster
+      .intersectObjects([...meshes.edges.values(), ...meshes.nodes.values(), ...markers.pickables], false)
+      .filter((h) => h.object.visible);
     return hits.length > 0 ? hits[0]!.object : null;
+  };
+
+  /** Compact destination card shown when hovering a marker (or node). */
+  const destCard = document.createElement('div');
+  destCard.className = 'dest-card';
+  destCard.hidden = true;
+  const destCat = document.createElement('span');
+  destCat.className = 'dest-cat';
+  const destName = document.createElement('div');
+  destName.className = 'dest-name';
+  const destActions = document.createElement('div');
+  destActions.className = 'dest-actions';
+  const btnSetStart = document.createElement('button');
+  btnSetStart.className = 'btn btn-ghost btn-sm';
+  btnSetStart.type = 'button';
+  btnSetStart.textContent = 'Set as start';
+  const btnGoHere = document.createElement('button');
+  btnGoHere.className = 'btn btn-primary btn-sm';
+  btnGoHere.type = 'button';
+  btnGoHere.textContent = 'Go here';
+  destActions.append(btnSetStart, btnGoHere);
+  destCard.append(destCat, destName, destActions);
+  viewport.appendChild(destCard);
+
+  let destCardId: string | null = null;
+  const setDestCard = (id: string | null): void => {
+    markers.setHover(id);
+    if (id === null) {
+      destCard.hidden = true;
+      destCardId = null;
+      return;
+    }
+    const item = markers.items.get(id);
+    const name = item !== undefined ? item.name : nameOf(id);
+    const cat = item !== undefined ? CATEGORIES[item.category].label : null;
+    destName.textContent = name;
+    destCat.textContent = cat ?? 'Location';
+    destCard.hidden = false;
+    destCardId = id;
   };
 
   const updateHover = (): void => {
@@ -354,6 +425,7 @@ async function main(): Promise<void> {
     hoverDirty = false;
     if (pointerPx === null) {
       routeLayer.setHoverEdge(null);
+      setDestCard(null);
       if (hoveredEdgeMesh !== null || hoveredVertexIds.size > 0) {
         hoveredEdgeMesh = null;
         hoveredVertexIds = new Set();
@@ -372,6 +444,9 @@ async function main(): Promise<void> {
       newVerts.add(hit.userData.vertexId as string);
     }
     routeLayer.setHoverEdge(newEdge);
+    // Destination card + hover ring: only for single-vertex hovers
+    // (marker badges and graph nodes), not edge hovers.
+    setDestCard(newEdge === null && newVerts.size === 1 ? [...newVerts][0]! : null);
     const changed =
       newEdge !== hoveredEdgeMesh || (newVerts.size === hoveredVertexIds.size && [...newVerts].some((v) => !hoveredVertexIds.has(v)));
     if (changed) {
@@ -392,12 +467,15 @@ async function main(): Promise<void> {
     hoverDirty = true;
   });
 
-  // Per-frame: replay advance (dt seconds), route pulse/chevrons, hover, labels.
-  scene.onTick((dt) => {
+  // Per-frame: replay advance (dt seconds), route pulse/chevrons, hover,
+  // labels, and the lagoon water animation.
+  scene.onTick((dt, t) => {
     replayer?.tick(dt);
     routeLayer.tick(performance.now());
     updateHover();
     updateLabels();
+    meshes.tick(t); // water + pennant sway
+    markers.tick(t); // hover-ring pulse
   });
 
   // ── panels ───────────────────────────────────────────────────────────────
@@ -550,14 +628,24 @@ async function main(): Promise<void> {
     if (r.status === 'ok') {
       const isBfs = replayAlgo === 'bfs';
       const routeLen = isBfs ? pathLengthMeters(r.path, weightOf) : null;
-      routeLayer.showRoute(r.path, ROUTE_COLOR, { pulse: true, chevrons: true, radius: PRIMARY_ROUTE_RADIUS });
+      // The traveling orb (reveal) replaces the old white pulse marker.
+      routeLayer.showRoute(r.path, ROUTE_COLOR, {
+        pulse: false,
+        chevrons: true,
+        radius: PRIMARY_ROUTE_RADIUS,
+        reveal: true,
+        animate: !REDUCED_MOTION,
+      });
       routeLayer.applyRouteEmphasis([r.path]);
       routeLayer.setTargetState(true);
+      ui.btnFollow.disabled = false;
       renderRouteResult(ui.panels.route, r, ALGO_LABEL[replayAlgo], routeLen);
     } else {
       routeLayer.clearEmphasis();
       routeLayer.setTargetState(false);
       state.routePath = null;
+      ui.btnFollow.disabled = true;
+      setFollow(false);
       renderRouteResult(ui.panels.route, r, ALGO_LABEL[replayAlgo], null);
     }
     renderGuestSummaryNow();
@@ -580,6 +668,50 @@ async function main(): Promise<void> {
     const result = findRoute(graph, from, to, algo);
     startReplay(result, ALGO_LABEL[algo], (r) => completeReplay(r, true));
   };
+
+  // ── destination card actions (hover a marker → Set as start / Go here) ──
+  btnSetStart.addEventListener('click', () => {
+    if (destCardId === null) return;
+    state.from = destCardId;
+    ui.fromSelect.set(destCardId);
+    routeLayer.setStart(destCardId);
+    scene.focusOn(meshes.worldPos(destCardId));
+    labelsDirty = true;
+    renderGuestSummaryNow();
+    destCard.hidden = true;
+    destCardId = null;
+  });
+  btnGoHere.addEventListener('click', () => {
+    if (destCardId === null) return;
+    state.to = destCardId;
+    ui.toSelect.set(destCardId);
+    routeLayer.setTarget(destCardId);
+    scene.focusOn(meshes.worldPos(destCardId));
+    labelsDirty = true;
+    renderGuestSummaryNow();
+    destCard.hidden = true;
+    destCardId = null;
+    // If a start is already chosen, run the route immediately (one tap).
+    if (state.from !== null && state.from !== state.to) doFindRoute();
+  });
+
+  // ── bottom sheet collapse (Guest) ────────────────────────────────────────
+  ui.sheetHead.addEventListener('click', () => {
+    const expanded = ui.sheetHead.getAttribute('aria-expanded') !== 'false';
+    ui.sheetHead.setAttribute('aria-expanded', String(!expanded));
+    ui.sheetBody.classList.toggle('collapsed', expanded);
+  });
+
+  // ── command palette (Ctrl/Cmd+K → jump to any location) ─────────────────
+  // Handles its own open/close/Esc; the return value is not needed here.
+  void buildPalette(appRoot, items, (id) => {
+    state.to = id;
+    ui.toSelect.set(id);
+    routeLayer.setTarget(id);
+    scene.focusOn(meshes.worldPos(id));
+    labelsDirty = true;
+    renderGuestSummaryNow();
+  });
 
   const restartReplay = (result: RouteResult, title: string): void => {
     state.algo = replayAlgo;
@@ -614,7 +746,13 @@ async function main(): Promise<void> {
       routeLayer.clearRoutes();
       routeLayer.resetHighlights();
       state.routePath = alt.primary.path;
-      routeLayer.showRoute(alt.primary.path, ROUTE_COLOR, { pulse: true, radius: PRIMARY_ROUTE_RADIUS });
+      routeLayer.showRoute(alt.primary.path, ROUTE_COLOR, {
+        pulse: false,
+        radius: PRIMARY_ROUTE_RADIUS,
+        reveal: true,
+        animate: !REDUCED_MOTION,
+      });
+      ui.btnFollow.disabled = false;
       if (alt.alternative !== null) {
         routeLayer.showRoute(alt.alternative.path, ALT_ROUTE_COLOR, { radius: ALT_ROUTE_RADIUS });
         routeLayer.applyRouteEmphasis([alt.primary.path, alt.alternative.path]);
@@ -631,6 +769,8 @@ async function main(): Promise<void> {
   const doReset = (): void => {
     state.blocks = [];
     state.routePath = null;
+    setFollow(false);
+    ui.btnFollow.disabled = true;
     stopReplay();
     hud.setState('hidden');
     hud.setCaption('');
@@ -764,7 +904,18 @@ async function main(): Promise<void> {
     }
     const isBfs = (sim !== undefined ? 'dijkstra' : state.algo) === 'bfs';
     const bfsLen = isBfs && result.status === 'ok' ? pathLengthMeters(result.path, weightOf) : null;
-    renderGuestSummary(ui.guestSummary, result, ALGO_LABEL[sim !== undefined ? 'dijkstra' : state.algo], bfsLen);
+    const algoLabel = ALGO_LABEL[sim !== undefined ? 'dijkstra' : state.algo];
+    // ONE hero card (guest + engineer Route tab): count-up distance, ETA,
+    // algorithm chip, stop list, actions. (Functions below are hoisted
+    // consts in scope — they run later, on user interaction.)
+    renderHeroRoute(ui.guestSummary, result, algoLabel, bfsLen, nameOf, {
+      onReplay: () => {
+        if (lastResult !== null) restartReplay(lastResult, ALGO_LABEL[replayAlgo]);
+      },
+      onCompare: () => doCompare(),
+      onAlternative: () => doAlternative(),
+      onBlock: () => toggleBlockTool(),
+    });
   };
 
   /**
@@ -809,19 +960,33 @@ async function main(): Promise<void> {
     appRoot.setAttribute('data-mode', m);
     ui.modeToggle.setMode(m);
     const guest = m === 'guest';
-    // Re-parent shared controls between dock (Guest) and sidebar (Engineer).
+    // Re-parent shared controls between the pill/sheet (Guest) and the
+    // sidebar (Engineer). Same DOM nodes — state and listeners travel with
+    // them.
     if (guest) {
+      ui.wherePill.append(ui.fromSelect.el, ui.btnSwap, ui.toSelect.el, ui.btnFindRoute);
+      // The guest sidebar is hidden; the mode toggle floats top-left.
+      appRoot.appendChild(ui.modeToggle.root);
       ui.dock.timelineSlot.appendChild(timeline.root);
-      ui.slots.dockRow.append(ui.btnBlock, ui.blockChip, ui.btnCompare, ui.btnAlternative);
+      ui.slots.dockRow.append(ui.btnBlock, ui.blockChip, ui.btnCompare, ui.btnAlternative, ui.btnFollow);
     } else {
+      ui.fromSlot.appendChild(ui.fromSelect.el);
+      ui.swapRow.appendChild(ui.btnSwap);
+      ui.toSlot.appendChild(ui.toSelect.el);
+      ui.findSlot.appendChild(ui.btnFindRoute);
+      // Mode toggle goes back to the top of the sidebar.
+      ui.root.prepend(ui.modeToggle.root);
       ui.replay.timelineSlot.appendChild(timeline.root);
-      ui.slots.compareAltRow.append(ui.btnCompare, ui.btnAlternative);
+      ui.slots.compareAltRow.append(ui.btnCompare, ui.btnAlternative, ui.btnFollow);
       ui.slots.blockRow.append(ui.btnBlock, ui.blockChip);
     }
     // Graph overlay: nodes + edge weights are engineer-only.
     meshes.setGraphVisible(!guest);
     timeline.setShowEventCount(!guest);
     if (guest) ui.guestSummary.hidden = lastResult === null;
+    // Atmosphere follows the mode: Engineer → "Holographic Blueprint",
+    // Guest → twilight (or night, if the user chose night). Animated tween.
+    scene.setMood(guest ? (timeOfDay === 'night' ? 'night' : 'twilight') : 'blueprint');
   };
 
   ui.modeToggle.root.querySelectorAll<HTMLButtonElement>('.mode-btn').forEach((b) => {
@@ -841,11 +1006,28 @@ async function main(): Promise<void> {
   toolbar.btnLabels.addEventListener('click', () => {
     const next = !meshes.labelsVisible();
     meshes.setLabelsVisible(next);
+    markers.setAllVisible(next); // name chips + badges share one toggle
     syncLabelsUi(next);
     labelsDirty = true;
   });
   toolbar.btnCamera.addEventListener('click', () => scene.frameAll(meshes.contentBox, true));
   ui.btnCamera.addEventListener('click', () => scene.frameAll(meshes.contentBox, true));
+
+  // ── follow-route camera (Phase 2) ────────────────────────────────────────
+  // Pans the camera toward the traveling orb each frame while active. Any
+  // user orbit/zoom cancels it (the scene fires onFollowCancelled).
+  let followOn = false;
+  const setFollow = (on: boolean): void => {
+    if (on && routeLayer.orbPosition() === null) {
+      on = false; // nothing to follow yet
+    }
+    followOn = on;
+    scene.setFollowTarget(on ? () => routeLayer.orbPosition() : null);
+    ui.btnFollow.setAttribute('aria-pressed', String(on));
+    ui.btnFollow.classList.toggle('active', on);
+  };
+  scene.onFollowCancelled = () => setFollow(false);
+  ui.btnFollow.addEventListener('click', () => setFollow(!followOn));
 
   let timeOfDay: TimeOfDay = 'day';
   toolbar.btnDayNight.addEventListener('click', () => {
@@ -859,13 +1041,27 @@ async function main(): Promise<void> {
     toolbar.btnDayNight.setAttribute('aria-pressed', String(toNight));
   });
 
+  // Quality: 3 tiers — high (SSAO + bloom + vignette) → balanced → low
+  // (no post, DPR 1). Cycles on click; the label always shows the NEXT tier.
+  const QUALITY_ORDER: RenderQuality[] = ['high', 'balanced', 'low'];
+  const QUALITY_LABEL: Record<RenderQuality, string> = {
+    high: 'High (SSAO + bloom + vignette)',
+    balanced: 'Balanced (bloom + vignette)',
+    low: 'Low (no post-processing)',
+  };
   let quality: RenderQuality = 'high';
+  const syncQualityUi = (): void => {
+    const next = QUALITY_ORDER[(QUALITY_ORDER.indexOf(quality) + 1) % QUALITY_ORDER.length]!;
+    toolbar.btnQuality.setAttribute('aria-pressed', String(quality !== 'high'));
+    toolbar.btnQuality.title = `Quality: ${QUALITY_LABEL[quality]} — click for ${QUALITY_LABEL[next]}`;
+    toolbar.btnQuality.setAttribute('aria-label', toolbar.btnQuality.title);
+  };
   toolbar.btnQuality.addEventListener('click', () => {
-    quality = quality === 'high' ? 'low' : 'high';
+    quality = QUALITY_ORDER[(QUALITY_ORDER.indexOf(quality) + 1) % QUALITY_ORDER.length]!;
     scene.setQuality(quality);
-    toolbar.btnQuality.setAttribute('aria-pressed', String(quality === 'low'));
-    toolbar.btnQuality.title = quality === 'low' ? 'Switch to high render quality' : 'Switch to low render quality (performance)';
+    syncQualityUi();
   });
+  syncQualityUi();
 
   const toggleFullscreen = async (): Promise<void> => {
     try {
@@ -882,12 +1078,15 @@ async function main(): Promise<void> {
     ui.btnBlock.classList.toggle('active', state.blockActive);
     ui.btnBlock.setAttribute('aria-pressed', String(state.blockActive));
   };
-  ui.btnBlock.addEventListener('click', () => {
+  /** Toggle the block-path tool. Shared by the toolbar button AND the hero
+   *  card's "Block Path" action, so both stay in sync. */
+  const toggleBlockTool = (): void => {
     state.blockActive = !state.blockActive;
     syncBlockUi();
     updateBlockStatus();
     hoverDirty = true;
-  });
+  };
+  ui.btnBlock.addEventListener('click', toggleBlockTool);
   scene.renderer.domElement.style.cursor = 'grab';
 
   // ── labels toggle (engineer sidebar) ─────────────────────────────────────
@@ -965,6 +1164,13 @@ async function main(): Promise<void> {
   await nextFrame();
   finishBoot();
 
+  // Cinematic first-load fly-in (skipped for reduced motion, and on the
+  // first run where the tour already owns the motion budget).
+  const firstRun = !hasCompletedTour();
+  if (!REDUCED_MOTION && !firstRun) {
+    scene.introFly(meshes.contentBox, 3.2);
+  }
+
   // ── first-run tour (never forced after dismissal) ─────────────────────────
   const tour = buildTour([
     {
@@ -994,7 +1200,7 @@ async function main(): Promise<void> {
     },
   ]);
   appRoot.appendChild(tour.root);
-  if (!hasCompletedTour()) {
+  if (firstRun) {
     // Start after the boot fade so the tour targets are already laid out.
     window.setTimeout(() => tour.start(), REDUCED_MOTION ? 100 : 700);
   }

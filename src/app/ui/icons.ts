@@ -24,7 +24,8 @@ export type IconName =
   | 'route'
   | 'close'
   | 'info'
-  | 'check';
+  | 'check'
+  | 'follow';
 
 const PATHS: Record<IconName, string> = {
   // location/tag
@@ -62,6 +63,8 @@ const PATHS: Record<IconName, string> = {
   info: 'M12 11v5m0-8v.5M12 21a9 9 0 110-18 9 9 0 010 18z',
   // check
   check: 'M5 12.5l4.5 4.5L19 7',
+  // traveler orb + 270° tracking arc (camera follow)
+  follow: 'M12 9.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5zM12 3a9 9 0 109 9',
 };
 
 /** Build an <svg> icon element (sized via CSS; stroke uses currentColor). */

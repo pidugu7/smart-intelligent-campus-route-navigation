@@ -1,13 +1,13 @@
 /**
  * app/ui/tour.ts
  *
- * Lightweight first-run onboarding (5 steps). A small floating card with
- * step progress + Skip / Next / Finish, and a soft highlight ring around
- * the relevant UI element when one exists. The tour is stored per browser
- * (localStorage) and is never shown again once dismissed or completed.
+ * First-run onboarding — SPOTLIGHT style (Phase 4): the page dims and a
+ * single element is lit at a time; a tooltip card explains it. The tooltip
+ * is placed below the target, or above when there is no room (so it never
+ * covers the bottom dock), and is clamped inside the viewport.
  *
- * No new dependencies, no full-screen takeover — the map stays visible
- * and interactive behind the card.
+ * Stored per browser (localStorage); never shown again once dismissed.
+ * No new dependencies.
  */
 
 import { icon } from './icons';
@@ -15,7 +15,7 @@ import { icon } from './icons';
 const STORAGE_KEY = 'scrn-tour-v1-done';
 
 export interface TourStep {
-  /** CSS selector of the element to highlight (or null for a free-standing card). */
+  /** CSS selector of the element to spotlight (or null for a free-standing card). */
   target: string | null;
   title: string;
   text: string;
@@ -42,21 +42,27 @@ function markTourDone(): void {
   }
 }
 
+const PAD = 8; // spotlight padding around the target
+const MARGIN = 12; // viewport margin for the tooltip
+const BOTTOM_SAFE = 120; // keep the tooltip out of the bottom dock zone
+
 export function buildTour(steps: readonly TourStep[]): TourRef {
   const root = document.createElement('div');
   root.className = 'tour';
   root.hidden = true;
   root.setAttribute('role', 'dialog');
-  root.setAttribute('aria-modal', 'false');
+  root.setAttribute('aria-modal', 'true');
   root.setAttribute('aria-label', 'Welcome tour');
 
-  const highlight = document.createElement('div');
-  highlight.className = 'tour-highlight';
-  highlight.hidden = true;
+  // One element does the dimming AND the hole: a huge box-shadow ring.
+  const spot = document.createElement('div');
+  spot.className = 'tour-spot';
+  spot.hidden = true;
 
   const card = document.createElement('div');
   card.className = 'tour-card';
-  card.appendChild(Object.assign(document.createElement('div'), { className: 'tour-stepno', textContent: '1 / 5' }));
+  const stepno = document.createElement('div');
+  stepno.className = 'tour-stepno';
   const title = document.createElement('div');
   title.className = 'tour-title';
   const text = document.createElement('div');
@@ -64,53 +70,84 @@ export function buildTour(steps: readonly TourStep[]): TourRef {
   const actions = document.createElement('div');
   actions.className = 'tour-actions';
   const btnSkip = document.createElement('button');
-  btnSkip.className = 'btn btn-ghost';
+  btnSkip.className = 'btn btn-ghost btn-sm';
   btnSkip.type = 'button';
-  btnSkip.textContent = 'Skip';
+  btnSkip.textContent = 'Skip tour';
   const btnNext = document.createElement('button');
-  btnNext.className = 'btn btn-primary';
+  btnNext.className = 'btn btn-primary btn-sm';
   btnNext.type = 'button';
   const nextLabel = Object.assign(document.createElement('span'), { textContent: 'Next' });
   const nextIcon = Object.assign(document.createElement('span'), { className: 'tour-next-icon' });
   btnNext.append(nextLabel, nextIcon);
   actions.append(btnSkip, btnNext);
-  card.append(title, text, actions);
+  card.append(stepno, title, text, actions);
 
-  root.append(highlight, card);
+  root.append(spot, card);
 
   let index = -1;
+  let active = false;
 
-  const positionHighlight = (sel: string | null): void => {
-    if (sel === null) {
-      highlight.hidden = true;
-      return;
-    }
-    const el = document.querySelector<HTMLElement>(sel);
+  const targetEl = (sel: string | null): HTMLElement | null => {
+    if (sel === null) return null;
+    return document.querySelector<HTMLElement>(sel);
+  };
+
+  /** Position the spotlight hole + tooltip for the current step. */
+  const place = (): void => {
+    const step = steps[index]!;
+    const el = targetEl(step.target);
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Tooltip metrics (rendered first, measured, then positioned).
+    card.style.visibility = 'hidden';
+    card.style.left = '0px';
+    card.style.top = '0px';
+    const cardW = card.offsetWidth;
+    const cardH = card.offsetHeight;
+    card.style.visibility = '';
+
     if (el === null) {
-      highlight.hidden = true;
+      // Free-standing: centered card, full dim (no hole).
+      spot.hidden = true;
+      card.style.left = `${Math.max(MARGIN, (vw - cardW) / 2)}px`;
+      card.style.top = `${Math.max(MARGIN, (vh - cardH) / 2)}px`;
       return;
     }
+
     const r = el.getBoundingClientRect();
-    highlight.hidden = false;
-    highlight.style.left = `${r.left - 6}px`;
-    highlight.style.top = `${r.top - 6}px`;
-    highlight.style.width = `${r.width + 12}px`;
-    highlight.style.height = `${r.height + 12}px`;
+    spot.hidden = false;
+    spot.style.left = `${r.left - PAD}px`;
+    spot.style.top = `${r.top - PAD}px`;
+    spot.style.width = `${r.width + PAD * 2}px`;
+    spot.style.height = `${r.height + PAD * 2}px`;
+    spot.style.borderRadius = '14px';
+
+    // Prefer BELOW the target; flip above if it would cover the dock zone.
+    let top = r.bottom + PAD + 10;
+    if (top + cardH > vh - BOTTOM_SAFE) {
+      top = r.top - PAD - 10 - cardH;
+    }
+    if (top < MARGIN) top = MARGIN;
+    const left = Math.min(Math.max(MARGIN, r.left + r.width / 2 - cardW / 2), vw - cardW - MARGIN);
+    card.style.left = `${left}px`;
+    card.style.top = `${top}px`;
   };
 
   const render = (): void => {
     const step = steps[index]!;
-    card.querySelector<HTMLElement>('.tour-stepno')!.textContent = `${index + 1} / ${steps.length}`;
+    stepno.textContent = `${index + 1} / ${steps.length}`;
     title.textContent = step.title;
     text.textContent = step.text;
     nextLabel.textContent = index === steps.length - 1 ? 'Finish' : 'Next';
     nextIcon.replaceChildren();
     if (index < steps.length - 1) nextIcon.appendChild(icon('step-forward', 14));
-    positionHighlight(step.target);
+    place();
   };
 
   const close = (): void => {
     root.hidden = true;
+    active = false;
     index = -1;
     markTourDone();
   };
@@ -127,16 +164,28 @@ export function buildTour(steps: readonly TourStep[]): TourRef {
   root.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') close();
   });
+  const onResize = (): void => {
+    if (active) place();
+  };
+  window.addEventListener('resize', onResize);
 
   return {
     root,
     start(): void {
       if (index >= 0 || hasCompletedTour()) return;
       index = 0;
+      active = true;
       root.hidden = false;
       render();
-      // Reposition the highlight if the layout settles (fonts, etc.).
-      window.setTimeout(() => positionHighlight(steps[index]!.target), 150);
+      // Reposition once the layout settles (fonts, images).
+      window.setTimeout(() => {
+        if (active) place();
+      }, 180);
+      // Remove the resize listener if the tour is torn down early.
+      root.dataset.tourActive = '1';
+      window.setTimeout(() => {
+        if (!root.isConnected) window.removeEventListener('resize', onResize);
+      }, 30000);
     },
   };
 }
