@@ -337,9 +337,20 @@ function buildingFor(id: string, type: string): THREE.Group | null {
     }
 
     case 'land-spaceship': {
+      // Geodesic sphere: the flat icosahedron faces read as curved panels,
+      // and an edge overlay makes the geodesic panel lines explicit.
+      const shellMat = std(COLORS.white, { roughness: 0.35, metalness: 0.3 });
+      shellMat.emissive = new THREE.Color(0x8fb4d8); // cool sheen, mood-driven
       const geo = new THREE.IcosahedronGeometry(44, 1);
-      g.add(mesh(geo, std(COLORS.white, { roughness: 0.7 }), 0, 44, 0));
+      g.add(mesh(geo, shellMat, 0, 44, 0));
+      const panels = new THREE.LineSegments(
+        new THREE.EdgesGeometry(geo, 1),
+        new THREE.LineBasicMaterial({ color: 0xb9c2cc, transparent: true, opacity: 0.7 }),
+      );
+      panels.position.set(0, 44, 0);
+      g.add(panels);
       g.add(cylinder(50, 52, 3, 32, std(0xcfd6df), 0, 1.5, 0));
+      g.userData.spaceshipSheenMat = shellMat;
       return g;
     }
     case 'attr-journey': {
@@ -450,13 +461,67 @@ function buildingFor(id: string, type: string): THREE.Group | null {
       return g;
     }
     case 'land-eiffel': {
-      const tower = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 24, 92, 4, 1), std(0x6d7683, { metalness: 0.5, roughness: 0.55 }));
-      tower.rotation.y = Math.PI / 4;
-      tower.position.y = 46;
-      g.add(tower);
-      g.add(box(34, 3, 34, std(0x6d7683, { metalness: 0.5 }), 0, 26, 0));
-      g.add(box(21, 2.6, 21, std(0x6d7683, { metalness: 0.5 }), 0, 58, 0));
-      g.add(cylinder(1.5, 1.5, 12, 8, std(0x6d7683), 0, 96, 0));
+      // Low-poly Eiffel replica: four arched legs, two decks, concave
+      // 4-sided tapered shafts (a 4-segment lathe = the square silhouette),
+      // spire, and a lattice line overlay. The steel material carries a
+      // soft warm emissive for the night glow (mood-driven, see moodHooks).
+      const steel = std(0x6d7683, { metalness: 0.5, roughness: 0.55, flat: false });
+      steel.emissive = new THREE.Color(0xffc873);
+      const shaftGeo = (y0: number, y1: number, r0: number, r1: number, rc: number, steps: number): THREE.LatheGeometry => {
+        const pts: THREE.Vector2[] = [];
+        for (let i = 0; i <= steps; i += 1) {
+          const t = i / steps;
+          // Quadratic-bezier radius → the signature concave (curved-in) taper.
+          const r = (1 - t) * (1 - t) * r0 + 2 * (1 - t) * t * rc + t * t * r1;
+          pts.push(new THREE.Vector2(r, y0 + (y1 - y0) * t));
+        }
+        return new THREE.LatheGeometry(pts, 4);
+      };
+      const linePos: number[] = [];
+      const pushLines = (geo: THREE.BufferGeometry, m4?: THREE.Matrix4): void => {
+        const src = m4 !== undefined ? geo.clone().applyMatrix4(m4) : geo;
+        const wf = new THREE.WireframeGeometry(src);
+        const p = wf.getAttribute('position');
+        for (let i = 0; i < p.count; i += 1) linePos.push(p.getX(i), p.getY(i), p.getZ(i));
+        wf.dispose();
+        if (m4 !== undefined) src.dispose();
+      };
+      // Four arched legs (square section) from the apron to the lower deck,
+      // under the shaft's corners.
+      const legGeo = new THREE.CylinderGeometry(1.7, 2.5, 1, 4);
+      for (let k = 0; k < 4; k += 1) {
+        const a = (k / 4) * Math.PI * 2;
+        const base = new THREE.Vector3(Math.cos(a) * 23, 0, Math.sin(a) * 23);
+        const top = new THREE.Vector3(Math.cos(a) * 12, 25, Math.sin(a) * 12);
+        const dir = top.clone().sub(base);
+        const leg = new THREE.Mesh(legGeo, steel);
+        leg.position.copy(base).addScaledVector(dir, 0.5);
+        leg.scale.set(1, dir.length(), 1);
+        leg.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
+        leg.castShadow = true;
+        g.add(leg);
+        leg.updateMatrix();
+        pushLines(legGeo, leg.matrix);
+      }
+      g.add(box(34, 3, 34, steel, 0, 26, 0));
+      g.add(box(20, 2.6, 20, steel, 0, 58, 0));
+      const s1 = shaftGeo(27.5, 58, 15, 7, 10.0, 8);
+      g.add(mesh(s1, steel, 0, 0, 0));
+      pushLines(s1);
+      const s2 = shaftGeo(59.3, 88, 6.2, 2.0, 3.8, 6);
+      g.add(mesh(s2, steel, 0, 0, 0));
+      pushLines(s2);
+      g.add(mesh(new THREE.CylinderGeometry(0.8, 1.1, 14, 4), steel, 0, 95, 0));
+      g.add(mesh(new THREE.SphereGeometry(1.2, 8, 6), steel, 0, 102.5, 0));
+      const latticeGeo = new THREE.BufferGeometry();
+      latticeGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePos, 3));
+      g.add(
+        new THREE.LineSegments(
+          latticeGeo,
+          new THREE.LineBasicMaterial({ color: 0x9aa6b4, transparent: true, opacity: 0.5 }),
+        ),
+      );
+      g.userData.eiffelGlowMat = steel;
       return g;
     }
 
@@ -961,30 +1026,40 @@ function addInstancedTrees(group: THREE.Group, layout: CampusLayout): void {
   }
   if (spots.length === 0) return;
 
+  // Two-tier low-poly tree (trunk + two stacked cones). Geometries are
+  // baked base-at-y=0 so a single ground-level instance matrix (position +
+  // uniform scale) grows each tree from the ground with its full variation.
   const dummy = new THREE.Object3D();
-  const trunkGeo = new THREE.CylinderGeometry(0.5, 0.75, 6, 6);
+  const trunkGeo = new THREE.CylinderGeometry(0.55, 0.85, 6, 6);
+  trunkGeo.translate(0, 3, 0);
   const trunkMat = std(0x4a3a28, { flat: true });
-  const canGeo = new THREE.ConeGeometry(3.4, 10, 7);
+  const canGeo = new THREE.ConeGeometry(4.2, 12, 7);
+  canGeo.translate(0, 4.5 + 6, 0); // canopy base at y=4.5 (top ≈ 16.5)
   const canMat = std(0x2f6b3a, { flat: true });
+  const can2Geo = new THREE.ConeGeometry(3.0, 8.5, 7);
+  can2Geo.translate(0, 12 + 4.25, 0); // upper tier base at y=12 (top ≈ 20.5)
+  const can2Mat = std(0x3d7a47, { flat: true });
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, spots.length);
   const canopies = new THREE.InstancedMesh(canGeo, canMat, spots.length);
+  const canopies2 = new THREE.InstancedMesh(can2Geo, can2Mat, spots.length);
   trunks.castShadow = true;
   canopies.castShadow = true;
+  canopies2.castShadow = true;
   for (let i = 0; i < spots.length; i += 1) {
     const s = spots[i]!;
-    const sc = 0.8 + rng() * 0.7;
-    dummy.position.set(s.x, 3 * sc, s.z);
+    const sc = 0.7 + rng() * 0.8; // varied sizes: ~14 m to ~31 m
+    dummy.position.set(s.x, 0, s.z);
     dummy.scale.setScalar(sc);
     dummy.rotation.y = rng() * Math.PI * 2;
     dummy.updateMatrix();
     trunks.setMatrixAt(i, dummy.matrix);
-    dummy.position.y = (6 + 4.5) * sc;
-    dummy.updateMatrix();
     canopies.setMatrixAt(i, dummy.matrix);
+    canopies2.setMatrixAt(i, dummy.matrix);
   }
   trunks.instanceMatrix.needsUpdate = true;
   canopies.instanceMatrix.needsUpdate = true;
-  group.add(trunks, canopies);
+  canopies2.instanceMatrix.needsUpdate = true;
+  group.add(trunks, canopies, canopies2);
 }
 
 /**
@@ -1022,30 +1097,39 @@ function addLampPosts(group: THREE.Group, layout: CampusLayout): {
   }
   if (spots.length === 0) return { headMat: std(0x2b3038, { flat: false }) };
 
-  const poleGeo = new THREE.CylinderGeometry(0.26, 0.42, 7, 6);
-  const poleMat = std(0x2b3038, { flat: false, metalness: 0.4, roughness: 0.5 });
-  const headGeo = new THREE.SphereGeometry(1.2, 12, 10);
+  // Upright post: wide base plinth, tapering pole, one warm glowing head.
+  // Geometries are baked base-at-y=0 so every instance stands straight on
+  // the walkway with identity rotation (no stray tilts).
+  const plinthGeo = new THREE.CylinderGeometry(0.85, 1.1, 0.9, 8);
+  plinthGeo.translate(0, 0.45, 0);
+  const poleGeo = new THREE.CylinderGeometry(0.3, 0.5, 8.6, 6);
+  poleGeo.translate(0, 0.6 + 4.3, 0); // spans 0.6 → 9.2
+  const headGeo = new THREE.SphereGeometry(1.5, 12, 10);
+  headGeo.translate(0, 9.8, 0);
+  const poleMat = std(0x2b3038, { flat: false, metalness: 0.5, roughness: 0.45 });
   const headMat = std(0x3a3f4a, { flat: false, metalness: 0.2, roughness: 0.4 });
   headMat.emissive = new THREE.Color(0xffd9a0);
   headMat.emissiveIntensity = MOODS.twilight.lampGlow * 2.4;
+  const plinths = new THREE.InstancedMesh(plinthGeo, poleMat, spots.length);
   const poles = new THREE.InstancedMesh(poleGeo, poleMat, spots.length);
   const heads = new THREE.InstancedMesh(headGeo, headMat, spots.length);
+  plinths.castShadow = true;
   poles.castShadow = true;
   const dummy = new THREE.Object3D();
   for (let i = 0; i < spots.length; i += 1) {
     const p = spots[i]!;
-    dummy.position.set(p.x, 3.5, p.z);
+    dummy.position.set(p.x, 0, p.z);
     dummy.rotation.set(0, 0, 0);
     dummy.scale.setScalar(1);
     dummy.updateMatrix();
+    plinths.setMatrixAt(i, dummy.matrix);
     poles.setMatrixAt(i, dummy.matrix);
-    dummy.position.set(p.x, 7.6, p.z);
-    dummy.updateMatrix();
     heads.setMatrixAt(i, dummy.matrix);
   }
+  plinths.instanceMatrix.needsUpdate = true;
   poles.instanceMatrix.needsUpdate = true;
   heads.instanceMatrix.needsUpdate = true;
-  group.add(poles, heads);
+  group.add(plinths, poles, heads);
   return { headMat };
 }
 
@@ -1323,6 +1407,8 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
   const nodes = new Map<string, THREE.Mesh<THREE.SphereGeometry, THREE.MeshStandardMaterial>>();
   const labels = new Map<string, THREE.Sprite>();
   const nodeMats: THREE.MeshStandardMaterial[] = [];
+  let eiffelGlowMat: THREE.MeshStandardMaterial | undefined;
+  let spaceshipSheenMat: THREE.MeshStandardMaterial | undefined;
   for (const v of layout.vertices) {
     const p = toWorld(v.x, v.y, 0);
     const building = buildingFor(v.id, v.type);
@@ -1331,6 +1417,13 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
       building.traverse((obj) => {
         if (obj instanceof THREE.Mesh) obj.castShadow = true;
       });
+      // Landmark glow slots (mood-driven emissive, see SceneManager).
+      const um = building.userData as {
+        eiffelGlowMat?: THREE.MeshStandardMaterial;
+        spaceshipSheenMat?: THREE.MeshStandardMaterial;
+      };
+      if (um.eiffelGlowMat !== undefined) eiffelGlowMat = um.eiffelGlowMat;
+      if (um.spaceshipSheenMat !== undefined) spaceshipSheenMat = um.spaceshipSheenMat;
       group.add(building);
     }
     const nodeY = NODE_HEIGHT[v.id] ?? 30;
@@ -1409,6 +1502,10 @@ export function buildCampusMeshes(layout: CampusLayout): CampusMeshes {
       skirtMat,
       skirtFadeMat,
       lampHeadMat: lamps.headMat,
+      // Optional slots: only present when the dataset has that landmark
+      // (exactOptionalPropertyTypes → conditional spread, never `undefined`).
+      ...(eiffelGlowMat !== undefined ? { eiffelGlowMat } : {}),
+      ...(spaceshipSheenMat !== undefined ? { spaceshipSheenMat } : {}),
       nodeMats,
       walkwayMats,
     },

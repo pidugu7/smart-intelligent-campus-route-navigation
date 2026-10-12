@@ -85,6 +85,10 @@ export interface MoodHooks {
   skirtFadeMat: THREE.MeshStandardMaterial;
   /** Lamp-head material (emissive intensity = lampGlow × constant). */
   lampHeadMat: THREE.MeshStandardMaterial;
+  /** Eiffel lattice material — soft warm landmark glow, strongest at night. */
+  eiffelGlowMat?: THREE.MeshStandardMaterial;
+  /** Spaceship Earth shell — subtle emissive sheen, lifted slightly at night. */
+  spaceshipSheenMat?: THREE.MeshStandardMaterial;
   /** Graph node materials (blueprint mode lifts their emissive). */
   nodeMats: THREE.MeshStandardMaterial[];
   /** Walkway materials (blueprint mode gives them a faint holographic lift). */
@@ -646,6 +650,12 @@ export class SceneManager {
       hooks.skirtMat.color.copy(m.groundColor);
       hooks.skirtFadeMat.color.copy(m.fogColor);
       hooks.lampHeadMat.emissiveIntensity = m.lampGlow * 2.4;
+      if (hooks.eiffelGlowMat !== undefined) {
+        hooks.eiffelGlowMat.emissiveIntensity = 0.3 + m.lampGlow * 1.2;
+      }
+      if (hooks.spaceshipSheenMat !== undefined) {
+        hooks.spaceshipSheenMat.emissiveIntensity = 0.12 + m.lampGlow * 0.5;
+      }
       for (const mat of hooks.nodeMats) {
         mat.emissive.setRGB(0.16 * m.nodeGlow, 0.62 * m.nodeGlow, 0.72 * m.nodeGlow);
         mat.emissiveIntensity = 0.5 + m.nodeGlow * 0.9;
