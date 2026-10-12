@@ -18,7 +18,10 @@ export interface Mood {
   skyTop: number;
   skyMid: number;
   skyHorizon: number;
-  /** Fog colour + depth range. */
+  /** Fog colour + depth range.
+   *  INVARIANT: fogColor must equal skyHorizon — distant geometry, the
+   *  horizon floor and the skirt fade all dissolve into the fog colour,
+   *  so it must match the sky's horizon exactly or a visible band appears. */
   fogColor: number;
   fogNear: number;
   fogFar: number;
@@ -63,7 +66,7 @@ export const MOODS: Record<MoodName, Mood> = {
     skyTop: 0x6fa3d8,
     skyMid: 0x9fc0e4,
     skyHorizon: 0xf0d2ae,
-    fogColor: 0xcbb096,
+    fogColor: 0xf0d2ae,
     fogNear: 2400,
     fogFar: 7400,
     hemiSky: 0xcfe0f5,
@@ -94,7 +97,7 @@ export const MOODS: Record<MoodName, Mood> = {
     skyTop: 0x0a1428,
     skyMid: 0x16233f,
     skyHorizon: 0x2a3c60,
-    fogColor: 0x0d1626,
+    fogColor: 0x2a3c60,
     fogNear: 2000,
     fogFar: 6200,
     hemiSky: 0x8aa5d6,
@@ -121,7 +124,7 @@ export const MOODS: Record<MoodName, Mood> = {
     skyTop: 0x030609,
     skyMid: 0x061018,
     skyHorizon: 0x0a2230,
-    fogColor: 0x05131c,
+    fogColor: 0x0a2230,
     fogNear: 1800,
     fogFar: 5800,
     hemiSky: 0x2a7a8e,

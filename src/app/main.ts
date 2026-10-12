@@ -48,6 +48,7 @@ import {
   type LabelPlacement,
   type LabelTier,
 } from '../viz/label-policy';
+import { clampApparentK, edgeFadeFactor } from '../viz/label-scale';
 import { buildControls, type AppMode } from './ui/controls';
 import {
   pathLengthMeters,
@@ -60,6 +61,7 @@ import {
   fmtDistance,
   fmtTime,
 } from './ui/readout';
+import { buildSheetSummaryLine } from './ui/route-summary';
 import { buildTimeline } from './ui/timeline';
 import { buildHud } from './ui/hud';
 import { buildTour, hasCompletedTour } from './ui/tour';
@@ -301,9 +303,8 @@ async function main(): Promise<void> {
       let k = THREE.MathUtils.clamp(d / 1500, 0.55, 2.3);
       const perUnitAtD = H / (2 * d * tanV); // px per world unit at depth d
       const hPx = base.y * k * perUnitAtD;
-      const hMinPx = Math.max(13, H * 0.019);
-      const hMaxPx = H * 0.046;
-      if (hPx > 1e-6) k = THREE.MathUtils.clamp(k, (hMinPx / hPx) * k, (hMaxPx / hPx) * k);
+      // Readable at range (min) and never huge up close (max).
+      k = clampApparentK(k, hPx, Math.max(13, H * 0.019), H * 0.046);
       sprite.scale.set(base.x * k, base.y * k, 1);
 
       projected.copy(sprite.position).project(cam);
@@ -330,7 +331,7 @@ async function main(): Promise<void> {
       // being cut off mid-word.
       const EDGE_PX = 30;
       const inset = Math.min(rect.left, rect.top, W - rect.right, H - rect.bottom);
-      edgeFactors.set(id, inset > EDGE_PX ? 1 : Math.max(0.05, inset / EDGE_PX));
+      edgeFactors.set(id, edgeFadeFactor(inset, EDGE_PX));
     }
 
     const ctx: LabelContext = {
@@ -391,9 +392,7 @@ async function main(): Promise<void> {
       let k = THREE.MathUtils.clamp(bd / 1500, 0.6, 2.1);
       const perUnitB = H / (2 * bd * tanV);
       const px = baseSize * k * perUnitB;
-      const sMinPx = Math.max(14, H * 0.02);
-      const sMaxPx = H * 0.05;
-      if (px > 1e-6) k = THREE.MathUtils.clamp(k, (sMinPx / px) * k, (sMaxPx / px) * k);
+      k = clampApparentK(k, px, Math.max(14, H * 0.02), H * 0.05);
       const s = baseSize * k;
       item.badge.scale.set(s, s, 1);
       // Start / destination badges are always visible (marker priority).
@@ -686,14 +685,14 @@ async function main(): Promise<void> {
   };
 
   /** Compact "distance · ETA · algo" line for the sheet's always-visible
-   *  strip (stays readable even when the sheet is collapsed). */
+   *  strip (stays readable even when the sheet is collapsed). The string
+   *  itself is built by the pure, unit-tested buildSheetSummaryLine so the
+   *  walk time can never drift from the result card / engineer panel. */
   const sheetSummaryLine = (r: RouteResult, algo: AlgorithmId): string => {
     if (r.status !== 'ok') return 'No route — destination unreachable';
     const isBfs = algo === 'bfs';
     const meters = isBfs ? pathLengthMeters(r.path, weightOf) : r.totalDistance;
-    const walk = fmtTime(estimateWalkTime(meters).estimatedSeconds);
-    const stops = isBfs ? `${r.totalDistance} stops · ` : '';
-    return `${stops}${fmtDistance(meters)} · ≈ ${walk} walk · ${ALGO_LABEL[algo]}`;
+    return buildSheetSummaryLine(meters, ALGO_LABEL[algo], isBfs ? r.totalDistance : undefined);
   };
 
   /** HUD summary line after a successful replay (both modes). */

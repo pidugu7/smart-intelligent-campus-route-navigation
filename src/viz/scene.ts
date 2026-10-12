@@ -28,6 +28,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { MOODS, QUALITY, type Mood, type MoodName, type QualityName } from './tokens';
+import { applyViewportResize } from './resize';
 
 /** Fallback clear colour (the sky dome overpaints it every frame). */
 export const SCENE_BACKGROUND = 0x6fa3d8;
@@ -252,6 +253,7 @@ export class SceneManager {
   private contextLost = false;
   /** Warn once per session about unexpected render errors (no log spam). */
   private renderErrorLogged = false;
+  private tickerErrorLogged = false;
   /** Small "context lost / restoring" card shown over the canvas. */
   private contextOverlay: HTMLDivElement | null = null;
 
@@ -738,15 +740,14 @@ export class SceneManager {
   }
 
   private onResize(): void {
-    const w = this.container.clientWidth;
-    const h = this.container.clientHeight;
-    // During fullscreen transitions the container can report 0×0 for a
-    // frame; rendering at that size is what blanks the canvas. Skip it.
-    if (w < 2 || h < 2) return;
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h);
-    this.composer?.setSize(w, h);
+    // Pure + unit-tested: updates camera aspect/projection, renderer size
+    // and the composer (all post-processing render targets ride along via
+    // composer.setSize), and skips transient 0×0 frames.
+    applyViewportResize(this.container.clientWidth, this.container.clientHeight, {
+      camera: this.camera,
+      renderer: this.renderer,
+      composer: this.composer,
+    });
   }
 
   private loop = (): void => {
@@ -811,7 +812,19 @@ export class SceneManager {
     }
 
     this.controls.update();
-    for (const fn of this.tickers) fn(dt, t);
+    // A failing ticker must not take the loop down (the rAF chain is
+    // pre-scheduled above, but an uncaught throw would spam the console
+    // every frame) — log once, keep running.
+    for (const fn of this.tickers) {
+      try {
+        fn(dt, t);
+      } catch (err) {
+        if (!this.tickerErrorLogged) {
+          this.tickerErrorLogged = true;
+          console.warn('[scene] tick error — continuing:', err);
+        }
+      }
+    }
 
     // Never render into a lost context (it would throw and leave a black
     // canvas); an unexpected GPU error is logged once, then kept quiet.

@@ -1428,11 +1428,14 @@ h1, h2, h3, .panel-title, .route-card, .hero-num, .dest-name, .gs-value {
 
 /* ── responsive ───────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
-  /* Pill stays compact and centred (never a full-width bar) so it cannot
-   * slide under the canvas toolbar or the mode toggle. */
+  /* Pill drops to a second row below the mode toggle and is LEFT-aligned
+   * with the canvas toolbar's column reserved on the right (100px), so a
+   * long search query can never slide under the toolbar buttons. */
   .where-pill {
     top: 62px;
-    max-width: calc(100% - 24px);
+    left: 12px;
+    transform: none;
+    max-width: calc(100% - 100px);
   }
   .where-pill .search { flex: 1 1 60px; min-width: 48px; }
   .where-pill .btn-find-route { padding: 8px 11px; }
