@@ -24,6 +24,8 @@ export interface TourStep {
 export interface TourRef {
   root: HTMLElement;
   start(): void;
+  /** True while a tour is on screen (other overlays must yield). */
+  isActive(): boolean;
 }
 
 export function hasCompletedTour(): boolean {
@@ -149,6 +151,7 @@ export function buildTour(steps: readonly TourStep[]): TourRef {
     root.hidden = true;
     active = false;
     index = -1;
+    delete root.dataset.tourActive;
     markTourDone();
   };
 
@@ -187,5 +190,6 @@ export function buildTour(steps: readonly TourStep[]): TourRef {
         if (!root.isConnected) window.removeEventListener('resize', onResize);
       }, 30000);
     },
+    isActive: () => active,
   };
 }

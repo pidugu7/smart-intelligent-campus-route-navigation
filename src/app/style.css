@@ -17,6 +17,11 @@
 
 * { box-sizing: border-box; }
 
+/* The `hidden` attribute must always win. Author `display:` declarations
+ * (e.g. `.palette-overlay { display: flex }`) otherwise override the UA
+ * stylesheet's `[hidden] { display: none }` and the element stays visible. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
@@ -1075,7 +1080,7 @@ h1, h2, h3, .panel-title, .route-card, .hero-num, .dest-name, .gs-value {
 /* ══ first-run tour ══════════════════════════════════════════════════════ */
 
 /* ── spotlight tour (Phase 4) ─────────────────────────────────────────── */
-.tour { position: fixed; inset: 0; pointer-events: none; z-index: 70; }
+.tour { position: fixed; inset: 0; pointer-events: none; z-index: var(--z-tour); }
 .tour-spot {
   position: fixed;
   border-radius: 14px;
@@ -1299,7 +1304,7 @@ h1, h2, h3, .panel-title, .route-card, .hero-num, .dest-name, .gs-value {
 .palette-overlay {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  z-index: var(--z-palette);
   background: rgba(4, 8, 16, 0.58);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
@@ -1344,6 +1349,8 @@ h1, h2, h3, .panel-title, .route-card, .hero-num, .dest-name, .gs-value {
 .palette-item.active { background: var(--gold-soft); }
 .palette-name { font-size: 14px; color: var(--text); }
 .palette-item.active .palette-name { color: var(--gold-bright); font-weight: 500; }
+/* Case-insensitive match highlight inside a place name. */
+.palette-name mark { background: transparent; color: var(--gold-bright); font-weight: 600; }
 .palette-tag { font-size: 10.5px; color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; }
 .palette-hint { padding: 8px 16px 10px; font-size: 11.5px; color: var(--faint); border-top: 1px solid var(--line-soft); }
 

@@ -85,6 +85,20 @@
   --bad-soft: #e57373;
   --radius: var(--r-m);
   --font: var(--font-body);
+
+  /* ── overlay z-index scale (low → high) ─────────────────────────────────
+     One defined order for every full-screen / floating layer:
+     10 chrome (sidebar) → 25 map overlays (dock/HUD/toolbar) →
+     30 floats (where-pill, mode toggle) → 40 on-map cards →
+     70 first-run tour → 80 command palette (above everything reachable).
+     The palette sits above the tour only because the user explicitly opens
+     it; while the tour is active the palette refuses to open. */
+  --z-chrome: 10;
+  --z-map-overlays: 25;
+  --z-floats: 30;
+  --z-cards: 40;
+  --z-tour: 70;
+  --z-palette: 80;
 }
 
 /* Engineer "Holographic Blueprint" surface overrides: colder, more cyan,

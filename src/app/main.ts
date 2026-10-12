@@ -702,16 +702,9 @@ async function main(): Promise<void> {
     ui.sheetBody.classList.toggle('collapsed', expanded);
   });
 
-  // ── command palette (Ctrl/Cmd+K → jump to any location) ─────────────────
-  // Handles its own open/close/Esc; the return value is not needed here.
-  void buildPalette(appRoot, items, (id) => {
-    state.to = id;
-    ui.toSelect.set(id);
-    routeLayer.setTarget(id);
-    scene.focusOn(meshes.worldPos(id));
-    labelsDirty = true;
-    renderGuestSummaryNow();
-  });
+  // The command palette is built near the end of main() — right after the
+  // tour — so the two full-screen overlays can coordinate (the palette must
+  // not open while the tour is on screen). See the palette section below.
 
   const restartReplay = (result: RouteResult, title: string): void => {
     state.algo = replayAlgo;
@@ -1202,8 +1195,34 @@ async function main(): Promise<void> {
   appRoot.appendChild(tour.root);
   if (firstRun) {
     // Start after the boot fade so the tour targets are already laid out.
-    window.setTimeout(() => tour.start(), REDUCED_MOTION ? 100 : 700);
+    window.setTimeout(() => {
+      tour.start();
+      // If the user opened the palette in the meantime, the tour wins the
+      // screen (the two full-screen overlays never coexist).
+      palette.close();
+    }, REDUCED_MOTION ? 100 : 700);
   }
+
+  // ── command palette (Ctrl/Cmd+K → jump to any location) ─────────────────
+  // Built after the tour so it can refuse to open while the tour is active,
+  // and so the tour can dismiss it. Handles its own key listener, Esc,
+  // backdrop click, focus restore and scroll lock; no persistence.
+  const suggestedIds = loaded.dataset.vertices
+    .filter((v) => v.type === 'gate' || v.type === 'pavilion' || v.type === 'landmark')
+    .map((v) => v.id);
+  const palette = buildPalette(
+    appRoot,
+    items,
+    (id) => {
+      state.to = id;
+      ui.toSelect.set(id);
+      routeLayer.setTarget(id);
+      scene.focusOn(meshes.worldPos(id));
+      labelsDirty = true;
+      renderGuestSummaryNow();
+    },
+    { suggest: suggestedIds, blocked: () => tour.isActive() },
+  );
 }
 
 void main();
