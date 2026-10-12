@@ -232,6 +232,8 @@ export interface MarkerItem {
   badge: THREE.Sprite;
   /** Badge world position (stems + hover ring anchor here). */
   badgePos: THREE.Vector3;
+  /** Instance slot of this badge's stem in the shared stem mesh. */
+  stemIndex: number;
   name: string;
   category: CategoryId;
   major: boolean;
@@ -246,11 +248,17 @@ export interface Markers {
   pickables: THREE.Sprite[];
   /** Base world size of a badge before LOD scaling (major/minor). */
   baseSize: { major: number; minor: number };
-  /** Advance the hover-ring pulse. */
+  /** Advance the hover-ring pulse (and re-anchor it to the live badge). */
   tick(tSec: number): void;
   /** Pulse ring around the hovered/selected vertex (null clears). */
   setHover(id: string | null): void;
   setAllVisible(visible: boolean): void;
+  /**
+   * Re-anchor every badge to float just above its current label (whose
+   * world height changes with the distance-based scale clamps) and stretch
+   * the stem to match. Cheap: only items that actually moved are updated.
+   */
+  syncBadgesToLabels(labels: Map<string, THREE.Sprite>): void;
   dispose(): void;
 }
 
@@ -298,7 +306,8 @@ export function buildMarkers(layout: CampusLayout, labels: Map<string, THREE.Spr
     group.add(badge);
     pickables.push(badge);
     const detail = v.type === 'attraction' || v.type === 'landmark';
-    items.set(v.id, { id: v.id, badge, badgePos, name: v.name, category: cat, major: v.major, detail });
+    // stemIndex is filled in when the shared stem mesh is built below.
+    items.set(v.id, { id: v.id, badge, badgePos, stemIndex: -1, name: v.name, category: cat, major: v.major, detail });
   }
 
   // Stems: one instanced thin cylinder per badge (deterministic tiny lean).
@@ -307,15 +316,16 @@ export function buildMarkers(layout: CampusLayout, labels: Map<string, THREE.Spr
     new THREE.MeshBasicMaterial({ color: 0xb9c6d8, transparent: true, opacity: 0.5 }),
     items.size,
   );
-  const dummy = new THREE.Object3D();
+  const stemDummy = new THREE.Object3D();
   let si = 0;
   for (const item of items.values()) {
+    item.stemIndex = si;
     const h = item.badgePos.y - 1;
-    dummy.position.set(item.badgePos.x, h / 2, item.badgePos.z);
-    dummy.scale.set(1, h, 1);
-    dummy.rotation.set(0, 0, 0);
-    dummy.updateMatrix();
-    stems.setMatrixAt(si, dummy.matrix);
+    stemDummy.position.set(item.badgePos.x, h / 2, item.badgePos.z);
+    stemDummy.scale.set(1, h, 1);
+    stemDummy.rotation.set(0, 0, 0);
+    stemDummy.updateMatrix();
+    stems.setMatrixAt(si, stemDummy.matrix);
     si += 1;
   }
   stems.instanceMatrix.needsUpdate = true;
@@ -351,10 +361,36 @@ export function buildMarkers(layout: CampusLayout, labels: Map<string, THREE.Spr
       mat.opacity = 0;
       return;
     }
+    const item = items.get(hoverId);
+    if (item !== undefined) ring.position.copy(item.badge.position); // live badge
     const phase = (tSec % 1.6) / 1.6;
     const s = ringBase * (1 + phase * 0.35);
     ring.scale.set(s, s, 1);
     mat.opacity = 0.85 * (1 - phase);
+  };
+
+  /**
+   * Keep every badge a fixed 5 m above its label's current TOP edge (the
+   * label's world height varies with distance-based scale clamps), and
+   * stretch the stem to reach it. Only items that actually moved touch the
+   * instance buffer.
+   */
+  const syncBadgesToLabels = (labels: Map<string, THREE.Sprite>): void => {
+    for (const item of items.values()) {
+      const label = labels.get(item.id);
+      if (label === undefined) continue;
+      const y = label.position.y + label.scale.y / 2 + 5;
+      if (Math.abs(y - item.badgePos.y) < 0.25) continue;
+      item.badgePos.y = y;
+      item.badge.position.y = y;
+      const h = y - 1;
+      stemDummy.position.set(item.badgePos.x, h / 2, item.badgePos.z);
+      stemDummy.scale.set(1, h, 1);
+      stemDummy.rotation.set(0, 0, 0);
+      stemDummy.updateMatrix();
+      stems.setMatrixAt(item.stemIndex, stemDummy.matrix);
+      stems.instanceMatrix.needsUpdate = true;
+    }
   };
 
   const setAllVisible = (v: boolean): void => {
@@ -376,5 +412,5 @@ export function buildMarkers(layout: CampusLayout, labels: Map<string, THREE.Spr
     group.removeFromParent();
   };
 
-  return { group, items, pickables, baseSize, tick, setHover, setAllVisible, dispose };
+  return { group, items, pickables, baseSize, tick, setHover, setAllVisible, syncBadgesToLabels, dispose };
 }

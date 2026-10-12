@@ -227,6 +227,8 @@ async function main(): Promise<void> {
   const labelBasePos = new Map<string, THREE.Vector3>();
   for (const [id, sprite] of meshes.labels) labelBasePos.set(id, sprite.position.clone());
   const leaderLines = new Map<string, THREE.Line>();
+  /** Per-label screen-edge fade factor (rebuilt in updateLabels). */
+  const edgeFactors = new Map<string, number>();
   let labelsDirty = true;
   let hoveredVertexIds = new Set<string>();
   let lastLabelCamPos = new THREE.Vector3(Infinity, Infinity, Infinity);
@@ -280,28 +282,42 @@ async function main(): Promise<void> {
     for (const [id, sprite] of meshes.labels) {
       const base = sprite.userData.baseScale as THREE.Vector2;
       const d = cam.position.distanceTo(sprite.position);
-      const k = THREE.MathUtils.clamp(d / 1500, 0.55, 2.3);
+      // Base model: scale with distance so the apparent size is roughly
+      // constant… then clamp the APPARENT pixel height to [min, max] so
+      // labels stay readable at range and never balloon up close.
+      let k = THREE.MathUtils.clamp(d / 1500, 0.55, 2.3);
+      const perUnitAtD = H / (2 * d * tanV); // px per world unit at depth d
+      const hPx = base.y * k * perUnitAtD;
+      const hMinPx = Math.max(13, H * 0.019);
+      const hMaxPx = H * 0.046;
+      if (hPx > 1e-6) k = THREE.MathUtils.clamp(k, (hMinPx / hPx) * k, (hMaxPx / hPx) * k);
       sprite.scale.set(base.x * k, base.y * k, 1);
 
       projected.copy(sprite.position).project(cam);
       if (projected.z > 1) {
-        sprite.visible = false;
+        sprite.userData.targetOpacity = 0; // behind the camera → fade out
         hideLeaderLine(id);
-        continue; // behind the camera
+        continue;
       }
       const px = ((projected.x + 1) / 2) * W;
       const py = ((1 - projected.y) / 2) * H;
       const perUnit = H / (2 * d * tanV); // pixels per world unit at this depth
       const halfW = (sprite.scale.x * perUnit) / 2;
       const halfH = (sprite.scale.y * perUnit) / 2;
+      const rect = { left: px - halfW, top: py - halfH, right: px + halfW, bottom: py + halfH };
       placements.push({
         id,
         tier: labelTiers.get(id) ?? 'medium',
         essential: id === state.from || id === state.to,
         distance: d,
-        rect: { left: px - halfW, top: py - halfH, right: px + halfW, bottom: py + halfH },
+        rect,
       });
       sprite.userData.perUnit = perUnit;
+      // Screen-edge fade: labels near the viewport edge dim out instead of
+      // being cut off mid-word.
+      const EDGE_PX = 30;
+      const inset = Math.min(rect.left, rect.top, W - rect.right, H - rect.bottom);
+      edgeFactors.set(id, inset > EDGE_PX ? 1 : Math.max(0.05, inset / EDGE_PX));
     }
 
     const ctx: LabelContext = {
@@ -316,17 +332,19 @@ async function main(): Promise<void> {
     for (const [id, sprite] of meshes.labels) {
       const decision = decisions.get(id);
       const base = labelBasePos.get(id);
-      if (decision === undefined || base === undefined) continue;
+      if (decision === undefined || base === undefined) {
+        sprite.userData.targetOpacity = 0;
+        continue;
+      }
       const tier = labelTiers.get(id) ?? 'medium';
       const essential = id === state.from || id === state.to || hoveredVertexIds.has(id);
 
       if (decision.verdict === 'hide') {
-        sprite.visible = false;
+        sprite.userData.targetOpacity = 0; // per-frame fade takes over
         hideLeaderLine(id);
         continue;
       }
 
-      sprite.visible = true;
       // Reset to base, then apply the vertical offset (screen px → world).
       sprite.position.copy(base);
       if (decision.verdict === 'offset') {
@@ -336,28 +354,74 @@ async function main(): Promise<void> {
       } else {
         hideLeaderLine(id);
       }
-      const mat = sprite.material as THREE.SpriteMaterial;
       const d = cam.position.distanceTo(sprite.position);
+      let target = 1;
       if (decision.verdict === 'fade') {
-        mat.opacity = 0.24;
-      } else if (decision.emphasis === 1) {
-        mat.opacity = 1; // route stops: full emphasis
-      } else {
-        mat.opacity = essential || tier === 'major' ? 1 : THREE.MathUtils.clamp(1.2 - d / 2200, 0.45, 1);
+        target = 0.24;
+      } else if (decision.emphasis !== 1 && !essential && tier !== 'major') {
+        target = THREE.MathUtils.clamp(1.2 - d / 2200, 0.45, 1);
       }
+      // (emphasis 1 / essential / major → full opacity)
+      sprite.userData.targetOpacity =
+        target * (edgeFactors.get(id) ?? 1);
+      sprite.visible = true; // the per-frame fade pass sets opacity/visibility
     }
 
-    // Marker badge LOD (Phase 3): far → majors only, mid → +detail
-    // (attractions/landmarks), close → all. Badges also scale with depth.
+    // Marker badge LOD: far → majors only, mid → +detail, close → all.
+    // Badge size uses the same apparent-size clamps as labels: readable at
+    // range, never huge up close.
     const badgeTier: 'far' | 'mid' | 'close' =
       camDist >= LABEL_FAR_DISTANCE ? 'far' : camDist >= LABEL_MEDIUM_DISTANCE ? 'mid' : 'close';
     for (const item of markers.items.values()) {
+      const baseSize = item.major ? markers.baseSize.major : markers.baseSize.minor;
       const bd = cam.position.distanceTo(item.badgePos);
-      const k = THREE.MathUtils.clamp(bd / 1500, 0.6, 2.1);
-      const s = (item.major ? markers.baseSize.major : markers.baseSize.minor) * k;
+      let k = THREE.MathUtils.clamp(bd / 1500, 0.6, 2.1);
+      const perUnitB = H / (2 * bd * tanV);
+      const px = baseSize * k * perUnitB;
+      const sMinPx = Math.max(14, H * 0.02);
+      const sMaxPx = H * 0.05;
+      if (px > 1e-6) k = THREE.MathUtils.clamp(k, (sMinPx / px) * k, (sMaxPx / px) * k);
+      const s = baseSize * k;
       item.badge.scale.set(s, s, 1);
+      // Start / destination badges are always visible (marker priority).
       item.badge.visible =
-        item.major || badgeTier === 'close' || (badgeTier === 'mid' && item.detail);
+        item.major ||
+        item.id === state.from ||
+        item.id === state.to ||
+        badgeTier === 'close' ||
+        (badgeTier === 'mid' && item.detail);
+    }
+
+    // Badges float just above their (now size-clamped) label, with the stem
+    // following — so icon and name never overlap at any zoom.
+    markers.syncBadgesToLabels(meshes.labels);
+  };
+
+  /**
+   * Per-frame: ease each label's opacity toward its target (updateLabels
+   * only sets targets). Hidden labels FADE out instead of popping, and the
+   * leader lines dim with their label.
+   */
+  const updateLabelFades = (dt: number): void => {
+    if (!meshes.labelsVisible()) return;
+    const step = Math.min(1, dt * 9);
+    for (const [id, sprite] of meshes.labels) {
+      const target = sprite.userData.targetOpacity;
+      if (typeof target !== 'number') continue;
+      const prev = sprite.userData.curOpacity;
+      let cur: number = typeof prev === 'number' ? prev : target;
+      if (typeof prev === 'number') {
+        cur += (target - cur) * step;
+        if (Math.abs(cur - target) < 0.008) cur = target;
+      }
+      sprite.userData.curOpacity = cur;
+      const vis = cur > 0.02;
+      if (vis !== sprite.visible) sprite.visible = vis;
+      (sprite.material as THREE.SpriteMaterial).opacity = cur;
+      const line = leaderLines.get(id);
+      if (line !== undefined && line.visible) {
+        (line.material as THREE.LineBasicMaterial).opacity = 0.55 * cur;
+      }
     }
   };
 
@@ -474,6 +538,7 @@ async function main(): Promise<void> {
     routeLayer.tick(performance.now());
     updateHover();
     updateLabels();
+    updateLabelFades(dt); // smooth label fade-in/out (no pops)
     meshes.tick(t); // water + pennant sway
     markers.tick(t); // hover-ring pulse
   });
